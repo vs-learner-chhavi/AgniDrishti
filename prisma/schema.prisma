@@ -1,0 +1,58 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model ThermalEvent {
+  id                 String   @id
+  latitude           Float
+  longitude          Float
+  detectedAt         DateTime
+  classification     String
+  confidence         Float
+  risk               String
+  brightnessKelvin   Float?
+  persistenceScore   Float?
+  industrialDistance Float?
+  landCover          String?
+  source             String
+  features           Json?
+  explanations       Json?
+  createdAt          DateTime @default(now())
+  alerts             Alert[]
+
+  @@index([detectedAt])
+  @@index([risk])
+  @@index([classification])
+}
+
+model Alert {
+  id        String   @id @default(cuid())
+  eventId   String
+  severity  String
+  status    String   @default("OPEN")
+  message   String?
+  createdAt DateTime @default(now())
+  event     ThermalEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@index([eventId])
+  @@index([status])
+}
+
+model Facility {
+  id        String   @id
+  name      String
+  type      String
+  latitude  Float
+  longitude Float
+  source    String   @default("OSM")
+  tags      Json?
+  createdAt DateTime @default(now())
+
+  @@index([latitude, longitude])
+  @@index([type])
+}
