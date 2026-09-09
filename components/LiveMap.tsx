@@ -26,7 +26,6 @@ export default function LiveMap({ events, selectedId, onSelect }: { events: MapE
         instanceRef.current = { map, markers: new Map() };
       }
       const { map, markers } = instanceRef.current;
-      const riskClass = (risk: string) => risk.toLowerCase().replace(/\s+/g, '-');
       events.forEach((event) => {
         const existing = markers.get(event.id);
         if (existing) existing.remove();
@@ -34,6 +33,7 @@ export default function LiveMap({ events, selectedId, onSelect }: { events: MapE
           radius: event.id === selectedId ? 11 : 8,
           weight: 2,
           color: event.risk === 'CRITICAL' ? '#fb7185' : event.risk === 'HIGH' ? '#fbbf24' : '#38bdf8',
+          fillColor: event.risk === 'CRITICAL' ? '#fb7185' : event.risk === 'HIGH' ? '#fbbf24' : '#38bdf8',
           fillOpacity: 0.85,
         }).addTo(map);
         marker.bindTooltip(`${event.id} · ${event.classification} · ${event.confidence}%`, { direction: 'top', offset: [0, -6] });
@@ -43,7 +43,7 @@ export default function LiveMap({ events, selectedId, onSelect }: { events: MapE
       markers.forEach((marker: any, id: string) => {
         if (!events.some((event) => event.id === id)) { marker.remove(); markers.delete(id); }
       });
-      void riskClass;
+      map.invalidateSize();
     });
     return () => { mounted = false; };
   }, [events, selectedId, onSelect]);
