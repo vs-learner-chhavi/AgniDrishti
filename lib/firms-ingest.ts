@@ -30,6 +30,7 @@ export async function ingestFirmsToDatabase() {
         risk: analysis.risk,
         classification: analysis.classification,
         source: `NASA_FIRMS_${h.satellite}`,
+        features: { firmsConfidence: h.confidence, satellite: h.satellite, frp: h.frp || 0 },
       },
       create: {
         id,
@@ -43,6 +44,7 @@ export async function ingestFirmsToDatabase() {
         persistenceScore: 0,
         industrialDistance: 10,
         source: `NASA_FIRMS_${h.satellite}`,
+        features: { firmsConfidence: h.confidence, satellite: h.satellite, frp: h.frp || 0 },
         explanations: analysis.explanations,
       },
     });
