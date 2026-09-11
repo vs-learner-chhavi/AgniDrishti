@@ -15,10 +15,11 @@ function parseFirmsCsv(csv:string):FirmsHotspot[]{
  const lines=csv.trim().split(/\r?\n/); if(lines.length<2)return[];
  const headers=lines[0].split(',');
  const idx=(name:string)=>headers.indexOf(name);
+ const confidenceValue=(value:string)=>{const normalized=String(value||'').trim().toLowerCase();if(normalized==='h'||normalized==='high')return 90;if(normalized==='n'||normalized==='nominal')return 60;if(normalized==='l'||normalized==='low')return 30;const numeric=Number(normalized);return Number.isFinite(numeric)?numeric:0;};
  return lines.slice(1).map(line=>splitCsv(line)).map(row=>({
   latitude:Number(row[idx('latitude')]),longitude:Number(row[idx('longitude')]),
-  brightness:Number(row[idx('bright_ti4')]||row[idx('bright_ti5')]||0),
-  confidence:Number(row[idx('confidence')]||0),acqDate:row[idx('acq_date')]||'',
+  brightness:Number(row[idx('bright_ti4')]||row[idx('brightness')]||row[idx('bright_ti5')]||0),
+  confidence:confidenceValue(row[idx('confidence')]),acqDate:row[idx('acq_date')]||'',
   acqTime:row[idx('acq_time')]||'',satellite:row[idx('satellite')]||'',frp:Number(row[idx('frp')]||0)
  })).filter(x=>Number.isFinite(x.latitude)&&Number.isFinite(x.longitude));
 }
