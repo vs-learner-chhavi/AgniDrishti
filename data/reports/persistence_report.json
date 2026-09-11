@@ -1,0 +1,22 @@
+{
+  "input_file": "C:\\Users\\chhav\\AgniDrishti\\data\\processed\\firms_clean.parquet",
+  "output_file": "C:\\Users\\chhav\\AgniDrishti\\data\\processed\\firms_features.parquet",
+  "rows": 3442480,
+  "columns": 41,
+  "spatial_grid_size_degrees": 0.05,
+  "spatial_cells": 91059,
+  "daily_activity_rows": 1497879,
+  "persistent_source_count": 535420,
+  "high_persistence_count": 249905,
+  "persistent_event_count": 1659865,
+  "high_persistence_event_count": 923884,
+  "persistence_windows_days": [
+    7,
+    30
+  ],
+  "active_days_30d_threshold": 5,
+  "detections_30d_threshold": 10,
+  "timestamp_start": "2024-01-01T06:13:00+00:00",
+  "timestamp_end": "2026-09-10T21:57:00+00:00",
+  "elapsed_seconds": 54.65
+}

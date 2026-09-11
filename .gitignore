@@ -11,3 +11,25 @@ node_modules/
 # OS
 .DS_Store
 Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Large datasets and generated outputs
+data/raw/
+data/processed/
+data/*.zip
+data/cache/
+data/**/*.parquet
+data/**/*.csv
+
+# Keep lightweight reports
+!data/reports/
+!data/reports/*.json
+
+# Build/cache files
+*.tsbuildinfo
