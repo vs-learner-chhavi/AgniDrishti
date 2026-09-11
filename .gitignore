@@ -20,16 +20,20 @@ venv/
 .env
 
 # Large datasets and generated outputs
-data/raw/
-data/processed/
-data/*.zip
 data/cache/
-data/**/*.parquet
-data/**/*.csv
+
+# Keep datasets tracked through Git LFS
+!data/raw/
+!data/processed/
+!data/*.zip
+!data/**/*.parquet
+!data/**/*.csv
 
 # Keep lightweight reports
 !data/reports/
 !data/reports/*.json
+
+
 
 # Build/cache files
 *.tsbuildinfo
