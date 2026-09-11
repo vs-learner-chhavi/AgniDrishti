@@ -10,7 +10,7 @@ const demoEvents=[
 ];
 
 function explain(e:any){return classifyThermalEvent({brightnessKelvin:Number(e.brightnessKelvin)||0,firmsConfidence:Number(e.firmsConfidence||e.confidence)||0,persistence:Number(e.persistenceScore)||0,industrialDistanceKm:Number(e.industrialDistance)||99,landCover:e.landCover||'unknown'}).explanations;}
-function shape(e:any){return {id:e.id,classification:e.classification,confidence:e.confidence,risk:e.risk,source:e.source,detectedAt:e.detectedAt,latitude:e.latitude,longitude:e.longitude,brightnessKelvin:e.brightnessKelvin,persistenceScore:e.persistenceScore,industrialDistance:e.industrialDistance,landCover:e.landCover,explanations:e.explanations||explain(e)};}
+function shape(e:any){const features=e.features||{};return {id:e.id,classification:e.classification,confidence:e.confidence,risk:e.risk,source:e.source,detectedAt:e.detectedAt,latitude:e.latitude,longitude:e.longitude,brightnessKelvin:e.brightnessKelvin,persistenceScore:e.persistenceScore,industrialDistance:e.industrialDistance,landCover:e.landCover,satellite:features.satellite||String(e.source||'').replace('NASA_FIRMS_',''),frp:features.frp,firmsConfidence:features.firmsConfidence,explanations:e.explanations||explain(e)};}
 
 export async function GET(){
  try{
