@@ -1,44 +1,23 @@
 'use client';
-import {useEffect,useRef} from 'react';
+import {useEffect,useRef,useState} from 'react';
+import type * as Leaflet from 'leaflet';
 
-type MapEvent={id:string;latitude:number;longitude:number;risk:string;confidence:number;classification:string};
-type LayerSet={halo:any;core:any;ring:any;marker:any};
+export type MapMode='detections'|'density';
+export type MapLayers={facilities:boolean;halos:boolean;labels:boolean;imagery:boolean};
+export type ThermalSignal={id:string;latitude:number;longitude:number;brightness:number;frp:number;date:string;time:string;confidence:number;satellite:string;persistenceDays:number;persistenceObservations:number;persistenceScore:number};
+export type FacilityPoint={name:string;type:string;latitude:number;longitude:number;distanceKm:number};
+type MapEvent={id:string;latitude:number;longitude:number;risk:string;confidence:number;classification:string;brightness:number;persistence:number};
 
-const palette=(risk:string)=>risk==='CRITICAL'?{stroke:'#ff6b57',fill:'#ff4f32'}:risk==='HIGH'?{stroke:'#ffc15a',fill:'#ff9d2e'}:{stroke:'#48d6b0',fill:'#28b8a0'};
+const colours:Record<string,string>={'Industrial Fire':'#f2543f','Gas Flare':'#9258d8','Crop Burning':'#e9a432','Wildfire':'#39ad69','Mining':'#318fca','Unclassified thermal anomaly':'#9bb4c6'};
 
-export default function LiveMap({events,selectedId,onSelect,pulse=false}:{events:MapEvent[];selectedId?:string;onSelect:(id:string)=>void;pulse?:boolean}){
- const mapRef=useRef<HTMLDivElement>(null),instanceRef=useRef<any>(null);
- useEffect(()=>{
-  let mounted=true;
-  import('leaflet').then(L=>{
-   if(!mounted||!mapRef.current)return;
-   if(!instanceRef.current){
-    const map=L.map(mapRef.current,{zoomControl:false,attributionControl:true}).setView([22.5,79],5);
-    L.control.zoom({position:'bottomright'}).addTo(map);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18}).addTo(map);
-    instanceRef.current={map,layers:new Map<string,LayerSet>()};
-   }
-   const {map,layers}=instanceRef.current;
-   events.forEach(event=>{
-    layers.get(event.id)?.halo.remove();layers.get(event.id)?.core.remove();layers.get(event.id)?.ring.remove();layers.get(event.id)?.marker.remove();
-    const c=palette(event.risk),intensity=Math.max(8,Math.min(28,(event.confidence/100)*22));
-    const halo=L.circle([event.latitude,event.longitude],{radius:intensity*900,stroke:false,fillColor:c.fill,fillOpacity:.09}).addTo(map);
-    const core=L.circle([event.latitude,event.longitude],{radius:Math.max(500,intensity*110),weight:event.id===selectedId?3:2,color:c.stroke,fillColor:c.fill,fillOpacity:.72}).addTo(map);
-    const ring=L.circle([event.latitude,event.longitude],{radius:Math.max(850,intensity*185),weight:1,color:c.stroke,fillOpacity:0,opacity:event.id===selectedId?.9:.42}).addTo(map);
-    const marker=L.circleMarker([event.latitude,event.longitude],{radius:event.id===selectedId?6:4,weight:1,color:'#fff',fillColor:c.fill,fillOpacity:.95}).addTo(map);
-    const label=`${event.id} · ${event.classification} · ${event.confidence}% confidence · ${event.risk}`;
-    [halo,core,ring,marker].forEach((layer:any)=>{layer.bindTooltip(label,{direction:'top',offset:[0,-7]});layer.on('click',()=>onSelect(event.id));});
-    layers.set(event.id,{halo,core,ring,marker});
-   });
-   layers.forEach((set:LayerSet,id:string)=>{if(!events.some(e=>e.id===id)){set.halo.remove();set.core.remove();set.ring.remove();set.marker.remove();layers.delete(id);}});
-   map.invalidateSize();
-  });
-  return()=>{mounted=false};
- },[events,selectedId,onSelect,pulse]);
- useEffect(()=>{
-  if(!pulse||!instanceRef.current)return;
-  const timer=setInterval(()=>{instanceRef.current?.layers.forEach((set:LayerSet)=>{const r=set.ring.getRadius();set.ring.setRadius(r>9000?900:r+450);set.ring.setStyle({opacity:r>9000?.35:.7});});},900);
-  return()=>clearInterval(timer);
- },[pulse]);
- return <div ref={mapRef} className="realMap" aria-label="Interactive India thermal activity map"/>;
+export default function LiveMap({events,densityEvents,facilities,selectedId,onSelect,mode,layers}:{events:MapEvent[];densityEvents:ThermalSignal[];facilities:FacilityPoint[];selectedId:string;onSelect:(id:string)=>void;mode:MapMode;layers:MapLayers}){
+ const host=useRef<HTMLDivElement>(null),mapRef=useRef<any>(null),leaflet=useRef<typeof Leaflet|null>(null),drawn=useRef<any[]>([]),tiles=useRef<{street:any;satellite:any}|null>(null),[mapReady,setMapReady]=useState(false);
+ useEffect(()=>{let cancelled=false,observer:ResizeObserver|undefined;(async()=>{const L=(await import('leaflet')).default;await import('leaflet.heat');if(cancelled||!host.current||mapRef.current)return;const map=L.map(host.current,{zoomControl:true,attributionControl:true}).setView([22.7,79.2],5);const street=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap contributors',maxZoom:19});const satellite=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{attribution:'Tiles © Esri',maxZoom:19});street.addTo(map);leaflet.current=L;tiles.current={street,satellite};mapRef.current=map;observer=new ResizeObserver(()=>map.invalidateSize({pan:false}));observer.observe(host.current);setMapReady(true)})();return()=>{cancelled=true;observer?.disconnect();if(mapRef.current){mapRef.current.remove();mapRef.current=null}}},[]);
+ useEffect(()=>{const map=mapRef.current,L=leaflet.current;if(!map||!tiles.current||!L)return;let timer:ReturnType<typeof setTimeout>|undefined,cancelled=false;const draw=(attempt=0)=>{if(cancelled||!host.current)return;const box=host.current.getBoundingClientRect();if(box.width<2||box.height<2){if(attempt<10)timer=setTimeout(()=>draw(attempt+1),50);return}map.invalidateSize({pan:false});drawn.current.forEach(x=>map.removeLayer(x));drawn.current=[];const {street,satellite}=tiles.current!;if(layers.imagery){if(map.hasLayer(street))map.removeLayer(street);if(!map.hasLayer(satellite))satellite.addTo(map)}else{if(map.hasLayer(satellite))map.removeLayer(satellite);if(!map.hasLayer(street))street.addTo(map)}
+  if(mode==='density'&&densityEvents.length&&(L as any).heatLayer){try{const heat=(L as any).heatLayer(densityEvents.map(x=>[x.latitude,x.longitude,Math.min(1,.18+(x.brightness-280)/100+x.frp/500)]),{radius:18,blur:23,maxZoom:8,gradient:{.15:'#28b8a0',.45:'#f0c849',.7:'#f28b38',1:'#ef3f35'}}).addTo(map);drawn.current.push(heat)}catch{if(attempt<3)timer=setTimeout(()=>draw(attempt+1),100);return}}
+  if(mode==='detections')events.forEach(e=>{const selected=e.id===selectedId,c=colours[e.classification]||'#9bb4c6';if(layers.halos&&e.risk!=='MODERATE'){const halo=L.circle([e.latitude,e.longitude],{radius:e.risk==='CRITICAL'?26000:16000,color:c,weight:1,fillColor:c,fillOpacity:.06,opacity:.32}).addTo(map);drawn.current.push(halo)}const marker=L.circleMarker([e.latitude,e.longitude],{radius:selected?8:4,color:selected?'#fff':c,weight:selected?2:1,fillColor:c,fillOpacity:.9}).addTo(map);marker.bindTooltip(`<b>${e.classification}</b><br>${e.brightness.toFixed(1)} K${e.confidence?` · ${e.confidence}% confidence`:'<br>Awaiting model classification'}`);marker.on('click',()=>onSelect(e.id));drawn.current.push(marker)});
+  if(layers.facilities)facilities.forEach(f=>{const m=L.circleMarker([f.latitude,f.longitude],{radius:5,color:'#65d5ff',weight:2,fillColor:'#071522',fillOpacity:1}).addTo(map);m.bindTooltip(`<b>${f.name}</b><br>${f.type} · ${f.distanceKm.toFixed(1)} km`);drawn.current.push(m)});
+  host.current.classList.toggle('hideMapLabels',!layers.labels&&!layers.imagery)};timer=setTimeout(draw,0);return()=>{cancelled=true;if(timer)clearTimeout(timer)}
+ },[events,densityEvents,facilities,selectedId,onSelect,mode,layers,mapReady]);
+ return <div ref={host} className="liveMap" aria-label="Interactive thermal activity map"/>;
 }
