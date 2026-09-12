@@ -37,3 +37,4 @@ data/cache/
 
 # Build/cache files
 *.tsbuildinfo
+data/derived/

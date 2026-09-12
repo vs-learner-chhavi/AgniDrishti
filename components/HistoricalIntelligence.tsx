@@ -15,6 +15,7 @@ import {
   Activity,
   AlertTriangle,
   CalendarDays,
+  Info,
   Layers,
   Radar,
   Satellite,
@@ -71,12 +72,83 @@ function thermalColor(peakK: number, selected: boolean): string {
   return '#ef3f35'; // red / EXTREME
 }
 
+// Legend entries share the exact colors/thresholds thermalColor uses above,
+// so the legend can never drift out of sync with what the bars actually show.
+const THERMAL_LEGEND = [
+  { label: 'LOW', color: '#28b8a0' },
+  { label: 'MODERATE', color: '#f0c849' },
+  { label: 'HIGH', color: '#f28b38' },
+  { label: 'EXTREME', color: '#ef3f35' },
+];
+
 function formatDateLabel(iso: string): string {
   const d = new Date(`${iso}T00:00:00Z`);
   return d
     .toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' })
     .toUpperCase()
     .replace(',', '');
+}
+
+function emptyDailyRecord(date: string): DailyRecord {
+  return {
+    date,
+    observationCount: 0,
+    peakBrightnessK: 0,
+    meanBrightnessK: 0,
+    peakFrpMw: null,
+    meanFrpMw: null,
+    satellites: [],
+    confidenceCounts: {},
+    dominantConfidence: null,
+    estimatedSpreadKm: null,
+    dataQuality: [],
+  };
+}
+
+/**
+ * Returns exactly 10 DailyRecords, one per calendar day, ending at the
+ * cluster's own most recent observed date (its real "latest day" -- NOT
+ * wall-clock today, since a precomputed dataset may be older than that; see
+ * CHANGES.md's note on persistence's `as_of`). Days the backend has no
+ * observation for are filled with a real, explicit zero-observation record
+ * -- never a fabricated value, just an honest "nothing detected that day."
+ */
+function buildLast10Days(timeline: DailyRecord[], periodEnd: string | null): DailyRecord[] {
+  const byDate = new Map(timeline.map((d) => [d.date, d]));
+  const anchorIso = timeline.length > 0 ? timeline[timeline.length - 1].date : periodEnd ?? new Date().toISOString().slice(0, 10);
+  const anchor = new Date(`${anchorIso}T00:00:00Z`);
+  const days: DailyRecord[] = [];
+  for (let i = 9; i >= 0; i--) {
+    const d = new Date(anchor);
+    d.setUTCDate(d.getUTCDate() - i);
+    const iso = d.toISOString().slice(0, 10);
+    days.push(byDate.get(iso) ?? emptyDailyRecord(iso));
+  }
+  return days;
+}
+
+// ------------------------------------------------------------------
+// HISTORICAL RECURRENCE INDEX
+//
+// A single, transparent 0-100 summary of how consistently this cluster
+// recurs, computed ENTIRELY from fields lib/historicalIntelligence.ts
+// already returns (data.persistence) -- no new backend data, no fabricated
+// inputs. It intentionally does NOT assign a categorical label (persistent
+// / intermittent / etc.) -- that interpretation already exists, computed
+// server-side with its own documented thresholds, in `data.behavior`. This
+// index only adds a single at-a-glance number so the two cards don't say
+// the same thing twice.
+//
+// Formula (deliberately simple -- 2 inputs, both already shown elsewhere
+// on this card as their own row so nothing here is hidden):
+//   70% x (activeDays / windowDays)            -- how much of the window had activity
+//   30% x (longestStreakDays / windowDays)     -- how long its best unbroken run was
+// Both ratios are capped at 1 before weighting. Result rounded to an integer.
+// ------------------------------------------------------------------
+function computeRecurrenceIndex(p: { activeDays: number; windowDays: number; longestStreakDays: number }): number {
+  const activeRatio = p.windowDays > 0 ? Math.min(1, p.activeDays / p.windowDays) : 0;
+  const streakRatio = p.windowDays > 0 ? Math.min(1, p.longestStreakDays / p.windowDays) : 0;
+  return Math.round(100 * (0.7 * activeRatio + 0.3 * streakRatio));
 }
 
 function confidenceContextLabel(day: DailyRecord): string {
@@ -93,6 +165,16 @@ function confidenceContextLabel(day: DailyRecord): string {
 function CustomTooltip({ active, payload }: any) {
   if (!active || !payload || !payload.length) return null;
   const day: DailyRecord = payload[0].payload;
+
+  if (day.observationCount === 0) {
+    return (
+      <div className="hiTooltip">
+        <b>{formatDateLabel(day.date)}</b>
+        <span>No observations this day</span>
+      </div>
+    );
+  }
+
   return (
     <div className="hiTooltip">
       <b>{formatDateLabel(day.date)}</b>
@@ -179,10 +261,13 @@ export default function HistoricalIntelligence({ eventId, latitude, longitude, b
     // is included so a live-updating selected event's baseline stays current.
   }, [eventId, latitude, longitude, brightnessK]);
 
-  const daySnapshot = useMemo(() => {
-    if (state.status !== 'ready' || !selectedDate) return null;
-    return state.data.timeline.find((d) => d.date === selectedDate) || null;
-  }, [state, selectedDate]);
+  // Hooks must run unconditionally on every render (React's Rules of Hooks) --
+  // this has to sit above the loading/error/empty early returns below, not
+  // after them, or the hook count differs between renders and React throws.
+  const last10 = useMemo(() => {
+    if (state.status !== 'ready') return [];
+    return buildLast10Days(state.data.timeline, state.data.provenance.observationPeriodEnd);
+  }, [state]);
 
   if (state.status === 'loading') {
     return (
@@ -213,7 +298,14 @@ export default function HistoricalIntelligence({ eventId, latitude, longitude, b
   }
 
   const { data } = state;
-  const chartData = data.timeline.map((d) => ({ ...d, __selected: d.date === selectedDate }));
+  const last10ObservationCount = last10.reduce((sum, d) => sum + d.observationCount, 0);
+  const daySnapshot = last10.find((d) => d.date === selectedDate) ?? last10[last10.length - 1] ?? null;
+
+  const recurrenceIndex = data.persistence ? computeRecurrenceIndex(data.persistence) : null;
+  const recurrenceExplainer = data.persistence
+    ? `70% weight on active days in the last ${data.persistence.windowDays}d (${data.persistence.activeDays}/${data.persistence.windowDays}), ` +
+      `30% weight on the longest unbroken run (${data.persistence.longestStreakDays}d). Purely descriptive -- not a risk score.`
+    : '';
 
   return (
     <div className="hiRoot">
@@ -221,7 +313,7 @@ export default function HistoricalIntelligence({ eventId, latitude, longitude, b
         <Satellite size={13} />
         <span>
           NASA FIRMS · {data.provenance.satellites.join(' + ') || 'Unknown satellite'} ·{' '}
-          {data.provenance.observationPeriodStart} → {data.provenance.observationPeriodEnd} · Precomputed aggregate
+          {data.provenance.observationPeriodStart} → {data.provenance.observationPeriodEnd}
           {data.matchMethod === 'neighbor_cell' && (
             <>
               {' '}
@@ -233,121 +325,141 @@ export default function HistoricalIntelligence({ eventId, latitude, longitude, b
 
       <div className="hiTimelineCard">
         <div className="hiCardHead">
-          <span className="label">DAILY OBSERVATION TIMELINE</span>
-          <em>{data.totalObservations} total observations</em>
+          <span className="label">LAST 10 DAYS</span>
+          <em>{last10ObservationCount} observation{last10ObservationCount === 1 ? '' : 's'}</em>
         </div>
-        {chartData.length > 0 ? (
-          <div className="hiChart">
-            <ResponsiveContainer width="100%" height={190}>
-              <BarChart data={chartData} margin={{ top: 6, right: 4, left: 4, bottom: 0 }}>
-                <XAxis
-                  dataKey="date"
-                  tickFormatter={(v: string) => v.slice(5)}
-                  tick={{ fill: '#536e85', fontSize: 8 }}
-                  axisLine={{ stroke: '#1b3248' }}
-                  tickLine={false}
-                  interval="preserveStartEnd"
-                />
-                <YAxis hide />
-                <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(79,201,241,0.06)' }} />
-                <Bar dataKey="observationCount" radius={[4, 4, 0, 0]} isAnimationActive={false}>
-                  {chartData.map((d) => (
-                    <Cell
-                      key={d.date}
-                      fill={thermalColor(d.peakBrightnessK, d.date === selectedDate)}
-                      cursor="pointer"
-                      // Closing over `d.date` directly (rather than reading it
-                      // back out of Recharts' onClick callback args) avoids
-                      // relying on a payload shape that differs across
-                      // Recharts versions/configurations -- this is what
-                      // makes "click a date -> Day Snapshot" reliable.
-                      onClick={() => setSelectedDate(d.date)}
-                    />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+
+        <div className="hiChart">
+          <ResponsiveContainer width="100%" height={190}>
+            <BarChart data={last10} margin={{ top: 6, right: 4, left: 4, bottom: 0 }} barCategoryGap="22%">
+              <XAxis
+                dataKey="date"
+                tickFormatter={(v: string) => v.slice(5)}
+                tick={{ fill: '#536e85', fontSize: 8 }}
+                axisLine={{ stroke: '#1b3248' }}
+                tickLine={false}
+                interval={0}
+              />
+              <YAxis hide />
+              <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(79,201,241,0.06)' }} />
+              <Bar dataKey="observationCount" radius={[4, 4, 1, 1]} minPointSize={3} isAnimationActive={false}>
+                {last10.map((d) => (
+                  <Cell
+                    key={d.date}
+                    fill={d.observationCount === 0 ? '#182c40' : thermalColor(d.peakBrightnessK, d.date === selectedDate)}
+                    stroke={d.date === selectedDate ? '#eafcff' : 'none'}
+                    strokeWidth={d.date === selectedDate ? 1 : 0}
+                    cursor="pointer"
+                    // Closing over `d.date` directly (rather than reading it
+                    // back out of Recharts' onClick callback args) avoids
+                    // relying on a payload shape that differs across
+                    // Recharts versions/configurations -- this is what
+                    // makes "click a date -> Day Snapshot" reliable.
+                    onClick={() => setSelectedDate(d.date)}
+                  />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+
+        <div className="hiLegend">
+          {THERMAL_LEGEND.map((l) => (
+            <span key={l.label}>
+              <i style={{ background: l.color }} />
+              {l.label}
+            </span>
+          ))}
+          <span className="hiLegendMuted">
+            <i />
+            NO DATA
+          </span>
+        </div>
+
+        {daySnapshot && (
+          <div className="hiDaySnapshot">
+            <div className="hiCardHead">
+              <CalendarDays size={13} />
+              <span className="label">DAY SNAPSHOT</span>
+              <em>{formatDateLabel(daySnapshot.date)}</em>
+            </div>
+            {daySnapshot.observationCount === 0 ? (
+              <p className="hiMuted">No observations detected this day.</p>
+            ) : (
+              <div className="hiSnapshotGrid">
+                <div>
+                  <b>{daySnapshot.observationCount}</b>
+                  <small>Detections</small>
+                </div>
+                <div>
+                  <b>{daySnapshot.peakBrightnessK.toFixed(1)} K</b>
+                  <small>Peak brightness</small>
+                </div>
+                <div>
+                  <b>{daySnapshot.peakFrpMw !== null ? `${daySnapshot.peakFrpMw.toFixed(1)} MW` : '—'}</b>
+                  <small>Peak FRP</small>
+                </div>
+                <div>
+                  <b>{daySnapshot.satellites.join(' + ') || '—'}</b>
+                  <small>Satellites</small>
+                </div>
+              </div>
+            )}
           </div>
-        ) : (
-          <div className="hiEmptyInline">No daily observations to display.</div>
         )}
       </div>
 
-      {daySnapshot && (
-        <div className="hiDaySnapshot">
-          <div className="hiCardHead">
-            <CalendarDays size={13} />
-            <span className="label">DAY SNAPSHOT</span>
-            <em>{formatDateLabel(daySnapshot.date)}</em>
-          </div>
-          <div className="hiSnapshotGrid">
-            <div>
-              <b>{daySnapshot.observationCount}</b>
-              <small>Detections</small>
-            </div>
-            <div>
-              <b>{daySnapshot.peakBrightnessK.toFixed(1)} K</b>
-              <small>Peak brightness</small>
-            </div>
-            <div>
-              <b>{daySnapshot.peakFrpMw !== null ? `${daySnapshot.peakFrpMw.toFixed(1)} MW` : '—'}</b>
-              <small>Peak FRP</small>
-            </div>
-            <div>
-              <b>{daySnapshot.satellites.join(' + ') || '—'}</b>
-              <small>Satellites</small>
-            </div>
-          </div>
-        </div>
-      )}
-
       <div className="hiSummaryGrid">
-        {data.persistence ? (
-          <div className="hiCard">
+        {data.persistence && recurrenceIndex !== null ? (
+          <div className="hiCard hiCardHero">
             <div className="hiCardHead">
               <Activity size={13} />
-              <span className="label">PERSISTENCE</span>
+              <span className="label">HISTORICAL RECURRENCE</span>
+              <em title={recurrenceExplainer} className="hiInfoTag">
+                <Info size={11} /> HOW THIS IS CALCULATED
+              </em>
             </div>
-            <div className="hiPersistenceHeadline">
-              {data.persistence.activeDays} / {data.persistence.windowDays}
-              <small>active days</small>
+            <div className="hiHeroBody">
+              <div className="hiPersistenceHeadline">
+                {recurrenceIndex}
+                <small>/ 100</small>
+              </div>
+              <div className="hiKeyValRows hiKeyValRowsWide">
+                <div>
+                  <span>Active days</span>
+                  <strong>{data.persistence.activeDays} / {data.persistence.windowDays}</strong>
+                </div>
+                <div>
+                  <span>Typical recurrence</span>
+                  <strong>
+                    {data.persistence.typicalRecurrenceDays !== null
+                      ? `~${data.persistence.typicalRecurrenceDays.toFixed(1)}d`
+                      : 'Unavailable'}
+                  </strong>
+                </div>
+                <div>
+                  <span>Longest streak</span>
+                  <strong>{data.persistence.longestStreakDays} day{data.persistence.longestStreakDays === 1 ? '' : 's'}</strong>
+                </div>
+                <div>
+                  <span>Recent trend</span>
+                  <strong>{data.persistence.recentTrend}</strong>
+                </div>
+              </div>
             </div>
-            <div className="hiKeyValRows">
-              <div>
-                <span title="Consecutive active days ending at this cluster's latest observed date">
-                  Current streak
-                </span>
-                <strong>{data.persistence.currentStreakDays} day{data.persistence.currentStreakDays === 1 ? '' : 's'}</strong>
-              </div>
-              <div>
-                <span>Longest streak</span>
-                <strong>{data.persistence.longestStreakDays} day{data.persistence.longestStreakDays === 1 ? '' : 's'}</strong>
-              </div>
-              <div>
-                <span>Typical recurrence</span>
-                <strong>
-                  {data.persistence.typicalRecurrenceDays !== null
-                    ? `~${data.persistence.typicalRecurrenceDays.toFixed(1)}d`
-                    : 'Unavailable'}
-                </strong>
-              </div>
-              <div>
-                <span>Recent trend</span>
-                <strong>{data.persistence.recentTrend}</strong>
-              </div>
-            </div>
+            <p className="hiMuted hiFootnote">{recurrenceExplainer}</p>
           </div>
         ) : (
-          <div className="hiCard hiCardMuted">
-            <span className="label">PERSISTENCE</span>
-            <p>INSUFFICIENT HISTORY FOR PERSISTENCE SUMMARY</p>
+          <div className="hiCard hiCardHero hiCardMuted">
+            <span className="label">HISTORICAL RECURRENCE</span>
+            <p className="hiMuted">INSUFFICIENT HISTORY FOR RECURRENCE ANALYSIS</p>
           </div>
         )}
 
         <div className="hiCard">
           <div className="hiCardHead">
             <TrendingUp size={13} />
-            <span className="label">HISTORICAL THERMAL BASELINE</span>
+            <span className="label">THERMAL BASELINE</span>
           </div>
           {data.baseline.status === 'INSUFFICIENT_HISTORY' ? (
             <p className="hiMuted">INSUFFICIENT HISTORY FOR BASELINE</p>
@@ -374,8 +486,8 @@ export default function HistoricalIntelligence({ eventId, latitude, longitude, b
               <span className={`hiStatusPill hi-${statusTone(data.baseline.status)}`}>{labelize(data.baseline.status)}</span>
               <p className="hiMuted hiFootnote">
                 {data.baseline.currentValueSource === 'SELECTED_EVENT'
-                  ? 'Current value is the selected event\u2019s own reading.'
-                  : 'Current value is the cluster\u2019s most recent historical observation.'}
+                  ? 'Current = selected event\u2019s own reading.'
+                  : 'Current = cluster\u2019s latest historical observation.'}
               </p>
             </>
           )}
@@ -393,7 +505,7 @@ export default function HistoricalIntelligence({ eventId, latitude, longitude, b
         <div className="hiCard">
           <div className="hiCardHead">
             <ShieldCheck size={13} />
-            <span className="label">MULTI-SATELLITE CORROBORATION</span>
+            <span className="label">SATELLITE CORROBORATION</span>
           </div>
           {data.corroboration.corroborated ? (
             <>
@@ -414,20 +526,20 @@ export default function HistoricalIntelligence({ eventId, latitude, longitude, b
                   <strong>{data.corroboration.temporalSeparationHours?.toFixed(1)} h</strong>
                 </div>
               </div>
-              <span className="hiStatusPill hi-low">CORROBORATED OBSERVATION</span>
-              <p className="hiMuted hiFootnote">Represents observational agreement, not a probability of fire.</p>
+              <span className="hiStatusPill hi-low">CORROBORATED</span>
+              <p className="hiMuted hiFootnote">Observational agreement only -- not a probability of fire.</p>
             </>
           ) : (
             <p className="hiMuted">NO MULTI-SATELLITE CORROBORATION AVAILABLE</p>
           )}
         </div>
 
-        {data.fingerprint.available && (
-          <div className="hiCard">
-            <div className="hiCardHead">
-              <Layers size={13} />
-              <span className="label">THERMAL ACTIVITY FINGERPRINT</span>
-            </div>
+        <div className="hiCard">
+          <div className="hiCardHead">
+            <Layers size={13} />
+            <span className="label">ACTIVITY FINGERPRINT</span>
+          </div>
+          {data.fingerprint.available ? (
             <div className="hiKeyValRows">
               <div>
                 <span>Persistence</span>
@@ -442,10 +554,6 @@ export default function HistoricalIntelligence({ eventId, latitude, longitude, b
                 <strong>{data.fingerprint.spatialStability}</strong>
               </div>
               <div>
-                <span>Recent trend</span>
-                <strong>{data.fingerprint.recentTrend}</strong>
-              </div>
-              <div>
                 <span>Observation frequency</span>
                 <strong>{data.fingerprint.observationFrequency}</strong>
               </div>
@@ -454,13 +562,15 @@ export default function HistoricalIntelligence({ eventId, latitude, longitude, b
                 <strong>{labelize(data.fingerprint.dayNightBehavior)}</strong>
               </div>
             </div>
-          </div>
-        )}
+          ) : (
+            <p className="hiMuted">INSUFFICIENT HISTORY FOR FINGERPRINT</p>
+          )}
+        </div>
 
         <div className="hiCard">
           <div className="hiCardHead">
             <AlertTriangle size={13} />
-            <span className="label">ESCALATION / CHANGE DETECTION</span>
+            <span className="label">ESCALATION</span>
           </div>
           {data.escalation.status === 'INSUFFICIENT_HISTORY' ? (
             <p className="hiMuted">INSUFFICIENT HISTORY FOR CHANGE DETECTION</p>
@@ -473,8 +583,10 @@ export default function HistoricalIntelligence({ eventId, latitude, longitude, b
                   <strong>{data.escalation.ratio?.toFixed(1)}×</strong>
                 </div>
                 <div>
-                  <span>Change detected</span>
-                  <strong>{data.escalation.changeDetectedDate ? formatDateLabel(data.escalation.changeDetectedDate) : '—'}</strong>
+                  <span title="Start of the recent 7-day window used for this comparison -- not an exact threshold-crossing date">
+                    Recent window since
+                  </span>
+                  <strong>{data.escalation.comparisonWindowStart ? formatDateLabel(data.escalation.comparisonWindowStart) : '—'}</strong>
                 </div>
               </div>
             </>
@@ -485,7 +597,7 @@ export default function HistoricalIntelligence({ eventId, latitude, longitude, b
 
         <div className="hiCard">
           <div className="hiCardHead">
-            <span className="label">ESTIMATED SPATIAL FOOTPRINT</span>
+            <span className="label">SPATIAL FOOTPRINT</span>
           </div>
           {data.spatialFootprint.status === 'AVAILABLE' ? (
             <div className="hiKeyValRows">

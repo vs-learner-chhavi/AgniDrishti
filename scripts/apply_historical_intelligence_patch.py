@@ -122,7 +122,9 @@ HI_CSS_BLOCK = f"""
 .hiCardHead svg{{color:#4fc9ea;flex:none}}
 .hiCardHead .label{{font-size:8px;letter-spacing:1px;color:#8aa2b4}}
 .hiCardHead em{{margin-left:auto;color:#5c8298;font-size:8px;font-style:normal}}
-.hiTimelineCard,.hiDaySnapshot{{border:1px solid #183047;border-radius:12px;background:#081827;padding:16px}}
+.hiInfoTag{{display:inline-flex;align-items:center;gap:4px;color:#5fc9ea;cursor:help}}
+.hiInfoTag svg{{color:#5fc9ea}}
+.hiTimelineCard{{border:1px solid #183047;border-radius:12px;background:#081827;padding:16px}}
 .hiChart{{width:100%}}
 .hiEmptyInline{{color:#5d7890;font-size:9px;text-align:center;padding:30px 0}}
 .hiTooltip{{display:flex;flex-direction:column;gap:4px;padding:10px 12px;border:1px solid #2b4a63;border-radius:8px;background:rgba(6,18,30,.97);box-shadow:0 12px 35px rgba(0,0,0,.4);font-size:8px;color:#cfe3ef;min-width:150px}}
@@ -131,12 +133,23 @@ HI_CSS_BLOCK = f"""
 .hiTooltip div{{display:flex;justify-content:space-between;gap:12px}}
 .hiTooltip em{{color:#6f899f;font-style:normal}}
 .hiTooltip strong{{color:#dff6ff;font-weight:700}}
+.hiLegend{{display:flex;flex-wrap:wrap;gap:14px;margin-top:10px;padding-top:10px;border-top:1px solid #152a3d}}
+.hiLegend>span{{display:flex;align-items:center;gap:5px;color:#7e96aa;font-size:7px;letter-spacing:.6px}}
+.hiLegend i{{width:7px;height:7px;border-radius:2px;display:inline-block}}
+.hiLegendMuted{{color:#4f6b80!important}}
+.hiLegendMuted i{{background:#182c40;border:1px solid #26415a}}
+.hiDaySnapshot{{margin-top:14px;padding-top:14px;border-top:1px solid #152a3d}}
 .hiSnapshotGrid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}}
 .hiSnapshotGrid>div{{border:1px solid #183047;border-radius:8px;background:#0a1c2c;padding:10px;text-align:center}}
 .hiSnapshotGrid b{{display:block;font-size:14px;color:#64d4f4}}
 .hiSnapshotGrid small{{display:block;color:#647d95;font-size:7px;margin-top:4px;letter-spacing:.4px}}
-.hiSummaryGrid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}}
+.hiSummaryGrid{{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}}
 .hiCard{{border:1px solid #183047;border-radius:12px;background:#081827;padding:14px}}
+.hiCard:hover{{border-color:#2b4a63}}
+.hiCardHero{{grid-column:1/-1}}
+.hiHeroBody{{display:flex;align-items:center;gap:28px;flex-wrap:wrap}}
+.hiCardHero .hiPersistenceHeadline{{font-size:44px;margin-bottom:0}}
+.hiKeyValRowsWide{{flex:1;min-width:220px;display:grid;grid-template-columns:repeat(2,1fr);gap:8px 26px;margin-bottom:0}}
 .hiCardMuted{{display:flex;flex-direction:column;gap:6px}}
 .hiKeyValRows{{display:flex;flex-direction:column;gap:7px;margin-bottom:8px}}
 .hiKeyValRows>div{{display:flex;justify-content:space-between;gap:10px;font-size:8px;color:#7e96aa}}
@@ -153,7 +166,8 @@ HI_CSS_BLOCK = f"""
 .hiSatRow{{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}}
 .hiSatBadge{{font-size:8px;font-weight:800;padding:5px 8px;border-radius:6px;border:1px solid #255d49;background:#10281f;color:#58dfb7}}
 .hiDisclaimer{{color:#4f6b80;font-size:7px;line-height:1.6;border-top:1px solid #182f43;padding-top:12px;margin:0}}
-@media(max-width:700px){{.hiSnapshotGrid{{grid-template-columns:1fr 1fr}}}}
+@media(max-width:1050px){{.hiSummaryGrid{{grid-template-columns:repeat(2,1fr)}}}}
+@media(max-width:700px){{.hiSummaryGrid{{grid-template-columns:1fr}}.hiSnapshotGrid{{grid-template-columns:1fr 1fr}}.hiHeroBody{{flex-direction:column;align-items:flex-start;gap:14px}}.hiKeyValRowsWide{{grid-template-columns:1fr}}}}
 """
 
 
@@ -161,12 +175,24 @@ def patch_globals_css() -> None:
     if not CSS_PATH.exists():
         raise FileNotFoundError(f"Could not find {CSS_PATH}")
     src = CSS_PATH.read_text(encoding="utf-8")
-    if HI_CSS_MARKER in src:
-        print(f"[skip] {CSS_PATH} already has the Historical Intelligence CSS block.")
+    marker_pos = src.find(HI_CSS_MARKER)
+    if marker_pos == -1:
+        # First-time install: append.
+        src = src.rstrip("\n") + "\n" + HI_CSS_BLOCK
+        CSS_PATH.write_text(src, encoding="utf-8")
+        print(f"[ok] Appended Historical Intelligence styles to {CSS_PATH}")
         return
-    src = src.rstrip("\n") + "\n" + HI_CSS_BLOCK
-    CSS_PATH.write_text(src, encoding="utf-8")
-    print(f"[ok] Appended Historical Intelligence styles to {CSS_PATH}")
+
+    # Upgrade in place: this assumes the HI block, once appended, is the
+    # last thing in the file (true for a fresh install and for every
+    # previous run of this script) -- replace from the marker to EOF.
+    before = src[:marker_pos].rstrip("\n")
+    new_src = before + "\n" + HI_CSS_BLOCK
+    if new_src == src.rstrip("\n") + "\n" or src[marker_pos:].strip() == HI_CSS_BLOCK.strip():
+        print(f"[skip] {CSS_PATH} Historical Intelligence styles already up to date.")
+        return
+    CSS_PATH.write_text(new_src, encoding="utf-8")
+    print(f"[ok] Updated Historical Intelligence styles in {CSS_PATH}")
 
 
 if __name__ == "__main__":

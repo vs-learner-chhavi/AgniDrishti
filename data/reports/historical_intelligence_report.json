@@ -1,0 +1,7 @@
+{
+  "input_file": "C:\\Users\\Divyanshi Arora\\OneDrive\\Documents\\Agni Drishti SIH 2026\\AgniDrishti\\data\\processed\\firms_clean.parquet",
+  "output_file": "C:\\Users\\Divyanshi Arora\\OneDrive\\Documents\\Agni Drishti SIH 2026\\AgniDrishti\\data\\derived\\historical_intelligence.json",
+  "grid_size_degrees": 0.05,
+  "cluster_count": 87098,
+  "elapsed_seconds": 3062.14
+}

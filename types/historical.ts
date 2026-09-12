@@ -41,10 +41,31 @@ export interface DailyRecord {
 }
 
 export interface PersistenceSummary {
+  /**
+   * Size (in calendar days) of the inclusive window ending at this
+   * cluster's own latest observed date -- e.g. 30 means exactly 30
+   * calendar dates, not 31. See PERSISTENCE_WINDOW_DAYS in
+   * scripts/build_historical_intelligence.py.
+   */
   windowDays: number;
+  /** Distinct active (>=1 observation) days within the windowDays-day window above. */
   activeDays: number;
   totalObservations: number;
+  /**
+   * Consecutive active days ending at this cluster's own latest observed
+   * date, counting backward across its FULL history (not bounded to the
+   * windowDays window -- a streak can extend further back than the window).
+   */
   currentStreakDays: number;
+  /**
+   * Longest run of consecutive active days found WITHIN the same
+   * windowDays-day window as activeDays/typicalRecurrenceDays above -- NOT
+   * the longest streak across the cluster's full history. A cluster can
+   * have a much longer streak earlier in its history that this field will
+   * not reflect; that's intentional, so every field on this object is
+   * scoped to the same window and the Historical Recurrence index (which
+   * combines activeDays and longestStreakDays) stays internally consistent.
+   */
   longestStreakDays: number;
   /** Mean gap (days) between consecutive active days within the window. Null if <2 active days. */
   typicalRecurrenceDays: number | null;
@@ -121,9 +142,21 @@ export type EscalationStatus = 'STABLE' | 'RECENT_ESCALATION' | 'INSUFFICIENT_HI
 
 export interface EscalationResult {
   status: EscalationStatus;
-  /** Recent (last 7 active-window) level divided by prior historical median level. Null if insufficient. */
+  /**
+   * (observations in the last 7 days / 7) divided by (observations in the
+   * prior history / span of that prior history), i.e. a recent OBSERVATION
+   * RATE compared to a prior OBSERVATION RATE -- not brightness, FRP, or a
+   * historical median of any value. See build_escalation() in
+   * scripts/build_historical_intelligence.py. Null if insufficient.
+   */
   ratio: number | null;
-  changeDetectedDate: string | null;
+  /**
+   * Start date (UTC) of the recent 7-day window used in the ratio above.
+   * This is NOT the date a threshold crossing was detected -- it is simply
+   * where the "recent" comparison window begins. Only meaningful when
+   * status is RECENT_ESCALATION.
+   */
+  comparisonWindowStart: string | null;
   reason: string;
 }
 

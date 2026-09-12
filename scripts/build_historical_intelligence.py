@@ -257,10 +257,17 @@ def resolve_near_duplicates(df: pd.DataFrame) -> pd.DataFrame:
     """
     log("Resolving archive/NRT near-duplicate observations...")
     window = pd.Timedelta(minutes=RESOLUTION_WINDOW_MINUTES)
+
+    # Reset to a dense 0..n-1 RangeIndex first. keep_mask is a plain NumPy
+    # array positionally aligned to df's rows; group.index.to_numpy() below
+    # is used to scatter results back into keep_mask by row position, which
+    # is only correct if df's index IS that row position. If df ever arrived
+    # with a non-default index (a stray filter upstream, a concat that
+    # didn't reset, etc.) this would silently write to the wrong rows.
+    df = df.sort_values(["grid_id", "date_only", "satellite", "timestamp"]).reset_index(drop=True)
     keep_mask = np.ones(len(df), dtype=bool)
     dropped = 0
 
-    df = df.sort_values(["grid_id", "date_only", "satellite", "timestamp"])
     group_cols = ["grid_id", "date_only", "satellite"]
 
     for _, group in df.groupby(group_cols, sort=False):
@@ -334,42 +341,74 @@ def build_daily_records(cluster_df: pd.DataFrame) -> list[dict]:
 
 def build_persistence_summary(daily: list[dict], as_of: pd.Timestamp) -> dict | None:
     """
-    `as_of` is the dataset's own max observation timestamp (see main()),
-    NOT wall-clock "now". So:
+    `as_of` is THIS CLUSTER's own max observation timestamp (passed in from
+    main() as `cluster_as_of = cluster_df["timestamp"].max()`), NOT the
+    dataset-wide max and NOT wall-clock "now". Two different clusters will
+    generally have different `as_of` values. So:
       - "currentStreakDays" = consecutive active days ending at this
-        cluster's MOST RECENTLY OBSERVED date, counting backward. If the
-        dataset was extracted weeks ago, this is a streak as of that
-        extraction, not as of today.
-      - "windowDays"/"activeDays" cover the PERSISTENCE_WINDOW_DAYS days
-        immediately before and including `as_of`.
-    The UI should treat these as "as of the dataset's latest observation",
+        cluster's MOST RECENTLY OBSERVED date, counting backward across its
+        full history. If a cluster's last observation is much older than
+        other clusters' (or than the dataset's own max timestamp), this
+        streak is still measured relative to THIS cluster's own last
+        observation, not some shared reference point.
+      - "windowDays"/"activeDays" cover an INCLUSIVE window of exactly
+        PERSISTENCE_WINDOW_DAYS calendar dates ending at `as_of` (e.g. 30
+        means [as_of - 29 days, as_of], 30 dates -- not 31).
+      - "longestStreakDays" is the longest run of consecutive active days
+        found WITHIN that same window (not the cluster's full history) --
+        see the field's doc comment in types/historical.ts.
+    The UI should treat these as "as of this cluster's latest observation",
     which the provenance line above the timeline makes visible via
     observationPeriodEnd.
     """
     if not daily:
         return None
+    # `as_of` is this cluster's raw max observation TIMESTAMP (real
+    # hour/minute, e.g. 02:14 UTC). Everything it's compared against below
+    # (`dates`, from date-only strings) is midnight-normalized. Comparing a
+    # non-midnight as_of against midnight dates directly would make the
+    # window boundary depend on what time of day the latest observation
+    # happened to occur -- an hour-of-day-dependent off-by-one on top of
+    # (and independent from) the day-count issue this function already
+    # fixes. Normalize to the calendar date once, up front, since every
+    # comparison in this function is calendar-day-level by design.
+    as_of = as_of.normalize()
     dates = pd.to_datetime([d["date"] for d in daily], utc=True)
     counts = {d["date"]: d["observationCount"] for d in daily}
 
-    window_start = as_of - pd.Timedelta(days=PERSISTENCE_WINDOW_DAYS)
+    # Inclusive N-day window ending at as_of: for PERSISTENCE_WINDOW_DAYS=30
+    # that's [as_of - 29 days, as_of], i.e. exactly 30 calendar dates. Using
+    # `- PERSISTENCE_WINDOW_DAYS` (no -1) would start the window one day too
+    # early and span 31 dates.
+    window_start = as_of - pd.Timedelta(days=PERSISTENCE_WINDOW_DAYS - 1)
     window_dates = sorted([d for d in dates if window_start <= d <= as_of])
     active_days = len(window_dates)
     total_obs_window = sum(counts[d.strftime("%Y-%m-%d")] for d in window_dates)
 
     all_dates_sorted = sorted(dates)
 
-    # Longest streak of consecutive calendar days with activity, over full history.
-    longest_streak = 1 if all_dates_sorted else 0
+    # Longest streak of consecutive calendar days with activity, scoped to
+    # the SAME window_dates as activeDays above (not the cluster's full
+    # history) -- see the PersistenceSummary.longestStreakDays doc comment
+    # in types/historical.ts for why: the client-side Historical Recurrence
+    # index combines activeDays/windowDays with longestStreakDays/windowDays,
+    # and both terms need to describe the same window or the index doesn't
+    # mean what its own formula says it means.
+    longest_streak = 1 if window_dates else 0
     current_run = 1
-    for i in range(1, len(all_dates_sorted)):
-        gap = (all_dates_sorted[i] - all_dates_sorted[i - 1]).days
+    for i in range(1, len(window_dates)):
+        gap = (window_dates[i] - window_dates[i - 1]).days
         if gap == 1:
             current_run += 1
             longest_streak = max(longest_streak, current_run)
         else:
             current_run = 1
 
-    # Current streak: consecutive active days ending at the most recent active day.
+    # Current streak: consecutive active days ending at the cluster's most
+    # recent observed date, counted across its FULL history (intentionally
+    # NOT bounded by window_dates -- see the type doc comment). `as_of` here
+    # is already this cluster's own latest observation (see main()), so
+    # all_dates_sorted[-1] == as_of's date whenever daily is non-empty.
     current_streak = 0
     if all_dates_sorted:
         current_streak = 1
@@ -668,6 +707,9 @@ def build_fingerprint(cluster_df: pd.DataFrame, daily: list[dict], persistence: 
 
 def build_escalation(daily: list[dict], as_of: pd.Timestamp) -> dict:
     """
+    `as_of` is THIS CLUSTER's own max observation timestamp (see main()),
+    matching build_persistence_summary's as_of -- not the dataset-wide max.
+
     Change detection compares two OBSERVATION RATES (detections per day),
     not brightness or FRP levels:
       recent_rate = (observations in the last 7 days) / 7
@@ -678,16 +720,26 @@ def build_escalation(daily: list[dict], as_of: pd.Timestamp) -> dict:
     that fires nightly instead of every few days -- it says nothing about
     whether any single detection is hotter or larger than before (that is
     what the THERMAL BASELINE feature is for).
+
+    The returned `comparisonWindowStart` is the start date of the recent
+    7-day window used above -- it is NOT the date some threshold was
+    crossed. Do not present it in the UI as an exact detection date.
     """
     total_obs = sum(d["observationCount"] for d in daily)
     dates_sorted = sorted(pd.to_datetime([d["date"] for d in daily], utc=True))
     history_days = (dates_sorted[-1] - dates_sorted[0]).days + 1 if dates_sorted else 0
 
+    # See the matching normalize() call and comment in build_persistence_summary:
+    # as_of carries a real time-of-day, but every date compared against it
+    # here is midnight-normalized. Normalize first so the 7-day windows
+    # below are pure calendar-day boundaries, not hour-of-day-dependent.
+    as_of = as_of.normalize()
+
     if total_obs < ESCALATION_MIN_TOTAL_OBS or history_days < ESCALATION_MIN_HISTORY_DAYS:
         return {
             "status": "INSUFFICIENT_HISTORY",
             "ratio": None,
-            "changeDetectedDate": None,
+            "comparisonWindowStart": None,
             "reason": (
                 f"Requires >= {ESCALATION_MIN_TOTAL_OBS} observations across >= "
                 f"{ESCALATION_MIN_HISTORY_DAYS} days of history."
@@ -704,7 +756,7 @@ def build_escalation(daily: list[dict], as_of: pd.Timestamp) -> dict:
         return {
             "status": "INSUFFICIENT_HISTORY",
             "ratio": None,
-            "changeDetectedDate": None,
+            "comparisonWindowStart": None,
             "reason": "No prior history before the most recent 7-day window.",
         }
     prior_span_days = max(
@@ -718,7 +770,7 @@ def build_escalation(daily: list[dict], as_of: pd.Timestamp) -> dict:
         return {
             "status": "INSUFFICIENT_HISTORY",
             "ratio": None,
-            "changeDetectedDate": None,
+            "comparisonWindowStart": None,
             "reason": "No prior baseline activity to compare against.",
         }
 
@@ -729,7 +781,7 @@ def build_escalation(daily: list[dict], as_of: pd.Timestamp) -> dict:
         return {
             "status": "RECENT_ESCALATION",
             "ratio": ratio,
-            "changeDetectedDate": recent_start.strftime("%Y-%m-%d"),
+            "comparisonWindowStart": recent_start.strftime("%Y-%m-%d"),
             "reason": (
                 f"Recent 7-day observation rate ({recent_txt}) is {ratio}x the prior "
                 f"historical observation rate ({prior_txt})."
@@ -738,7 +790,7 @@ def build_escalation(daily: list[dict], as_of: pd.Timestamp) -> dict:
     return {
         "status": "STABLE",
         "ratio": ratio,
-        "changeDetectedDate": None,
+        "comparisonWindowStart": None,
         "reason": (
             f"Recent 7-day observation rate ({recent_txt}) is {ratio}x the prior "
             f"historical observation rate ({prior_txt}); below the {ESCALATION_RATIO}x threshold."
@@ -774,10 +826,10 @@ def main():
     df = load_and_grid()
     df = resolve_near_duplicates(df)
 
-    as_of = df["timestamp"].max()
-    log(f"Using dataset max timestamp as 'now' reference: {as_of.isoformat()}")
-
     clusters: dict[str, dict] = {}
+    dataset_as_of = df["timestamp"].max()
+    log(f"Dataset-wide max timestamp (metadata only, NOT used per-cluster): {dataset_as_of.isoformat()}")
+
     grouped = df.groupby("grid_id", sort=False)
     n_cells = grouped.ngroups
     log(f"Building Historical Intelligence records for {n_cells:,} spatial cells.")
@@ -787,13 +839,22 @@ def main():
     # per cell (which was previously O(cells x rows) -- far too slow for a
     # multi-million-row dataset with many thousands of distinct cells).
     for n_done, (grid_id, cluster_df) in enumerate(grouped, start=1):
+        # Each cluster's temporal metrics (persistence window, streaks,
+        # escalation) are anchored to THIS CLUSTER's own latest observation,
+        # not the dataset-wide latest. Two clusters can have very different
+        # as_of values -- e.g. one still actively detected in NRT data, one
+        # whose last detection was months ago in the archive -- and each
+        # must be judged relative to its own timeline, not another
+        # cluster's (or the whole dataset's) most recent activity.
+        cluster_as_of = cluster_df["timestamp"].max()
+
         daily = build_daily_records(cluster_df)
-        persistence = build_persistence_summary(daily, as_of)
+        persistence = build_persistence_summary(daily, cluster_as_of)
         baseline = build_baseline(cluster_df, daily)
         behavior = build_behavior(len(cluster_df), persistence)
         corroboration = build_corroboration(cluster_df)
         fingerprint = build_fingerprint(cluster_df, daily, persistence)
-        escalation = build_escalation(daily, as_of)
+        escalation = build_escalation(daily, cluster_as_of)
         footprint = build_footprint(cluster_df)
 
         centroid_lat = float(cluster_df["latitude"].mean())
