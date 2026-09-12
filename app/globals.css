@@ -129,3 +129,5 @@
 @media(max-width:1050px){.restoredMonitor .mapStage{height:500px}.restoredMonitor .selectedPanel{max-width:none}}
 @media(max-width:700px){.restoredMonitor .mapHeader{height:auto;min-height:94px;align-items:flex-start;padding-top:13px}.restoredMonitor .mapControls{align-items:flex-end;flex-direction:column}.restoredMonitor .mapTools{display:none}.restoredMonitor .timeRail{flex-wrap:wrap;padding:8px 12px}.restoredMonitor .timeRail em{width:100%;margin:3px 0 0}.restoredMonitor .mapStage{height:430px}.restoredMonitor .classLegend{right:14px}.restoredMonitor .signalGrid{grid-template-columns:1fr}.restoredMonitor .panelActions{grid-template-columns:1fr 1fr}}
 .restoredMonitor .classLegend .unclassified{background:#9bb4c6;color:#9bb4c6}
+
+.indiaStateLabel{background:transparent;border:0;text-align:center;color:#183e58;font-size:9px;font-weight:700;line-height:1.2;text-shadow:0 0 3px #fff,0 0 3px #fff;pointer-events:none}.indiaStateLabel span{white-space:normal}

@@ -1,12 +1,14 @@
 'use client';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type * as Leaflet from 'leaflet';
+import {terrainTiles,terrainOptions,loadIndiaBoundaries,addIndiaBoundaries} from '@/lib/india-map';
 
 type Point = { latitude: number; longitude: number };
 export default function ScenarioMap({ point, runs, onPick }: {
   point: Point | null; runs: (Point & { id: string; label: string })[];
   onPick: (point: Point) => void;
 }) {
+  const [mapError,setMapError]=useState('');
   const host = useRef<HTMLDivElement>(null);
   const map = useRef<Leaflet.Map | null>(null);
   const overlays = useRef<Leaflet.LayerGroup | null>(null);
@@ -18,13 +20,12 @@ export default function ScenarioMap({ point, runs, onPick }: {
   useEffect(() => {
     let disposed = false;
     let observer: ResizeObserver | undefined;
-    void import('leaflet').then(({ default: L }) => {
+    void Promise.all([import('leaflet'),loadIndiaBoundaries()]).then(([{ default: L },boundaries]) => {
       if (disposed || !host.current) return;
       const instance = L.map(host.current).setView([22.7, 79.2], 4);
       map.current = instance;
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap contributors', maxZoom: 18,
-      }).addTo(instance);
+      L.tileLayer(terrainTiles,terrainOptions).addTo(instance);
+      addIndiaBoundaries(L,instance,boundaries);
       overlays.current = L.layerGroup().addTo(instance);
       instance.on('click', e => {
         const position = e.latlng.wrap();
@@ -47,9 +48,9 @@ export default function ScenarioMap({ point, runs, onPick }: {
       redraw.current();
       observer = new ResizeObserver(() => instance.invalidateSize({ pan: false }));
       observer.observe(host.current);
-    });
+    }).catch(error=>{if(!disposed)setMapError(error instanceof Error?error.message:'Map unavailable')});
     return () => { disposed = true; observer?.disconnect(); map.current?.remove(); map.current = null; overlays.current = null; };
   }, []);
   useEffect(() => redraw.current(), [point, runs]);
-  return <div ref={host} className="scenarioMap" aria-label="Choose scenario coordinates by clicking the map" />;
+  return <div ref={host} className="scenarioMap" aria-label="Choose scenario coordinates by clicking the map">{mapError&&<p role="alert">{mapError}</p>}</div>;
 }
