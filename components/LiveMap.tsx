@@ -281,5 +281,5 @@ export default function LiveMap({
     };
   }, [events, densityEvents, facilities, selectedId, onSelect, mode, layers, mapReady, heatReady]);
 
-  return <div ref={host} className="liveMap" aria-label="Interactive thermal activity map" />;
+  return <div ref={host} className="realMap" aria-label="Interactive thermal activity map" />;
 }
