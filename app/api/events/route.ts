@@ -3,7 +3,7 @@ import {prisma} from '@/lib/prisma';
 import {classifyThermalEvent} from '@/lib/classifier';
 
 const demoEvents=[
- {id:'TG-1042',classification:'Industrial Fire',confidence:91,risk:'CRITICAL',source:'DEMO',detectedAt:new Date().toISOString(),latitude:22.31,longitude:72.61,brightnessKelvin:342,persistenceScore:88,persistenceDays:18,persistenceObservations:42,persistenceWindow:30,industrialDistance:0.7,landCover:'industrial'},
+ {id:'TG-1042',classification:'Industrial Fire',confidence:91,risk:'CRITICAL',source:'DEMO',detectedAt:new Date().toISOString(),latitude:23.77591,longitude:86.38096,brightnessKelvin:342,persistenceScore:88,persistenceDays:18,persistenceObservations:42,persistenceWindow:30,industrialDistance:0.7,landCover:'industrial'},
  {id:'TG-1037',classification:'Gas Flare',confidence:96,risk:'HIGH',source:'DEMO',detectedAt:new Date().toISOString(),latitude:27.17,longitude:73.21,brightnessKelvin:329,persistenceScore:97,persistenceDays:24,persistenceObservations:61,persistenceWindow:30,industrialDistance:1.1,landCover:'industrial'},
  {id:'TG-1028',classification:'Crop Burning',confidence:86,risk:'MODERATE',source:'DEMO',detectedAt:new Date().toISOString(),latitude:29.06,longitude:76.08,brightnessKelvin:318,persistenceScore:43,persistenceDays:7,persistenceObservations:11,persistenceWindow:30,industrialDistance:18.4,landCover:'cropland'},
  {id:'TG-1019',classification:'Wildfire',confidence:84,risk:'HIGH',source:'DEMO',detectedAt:new Date().toISOString(),latitude:20.26,longitude:84.27,brightnessKelvin:337,persistenceScore:29,persistenceDays:4,persistenceObservations:6,persistenceWindow:30,industrialDistance:31.2,landCover:'forest'}
