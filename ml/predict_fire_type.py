@@ -20,6 +20,8 @@ class FireTypePredictor:
     def __init__(self):
         with open(MODEL_PATH, "rb") as file:
             self.model = pickle.load(file)
+        # Training saved n_jobs=-1. Bound inference threads on laptops.
+        self.model.set_params(n_jobs=2)
 
         with open(ENCODER_PATH, "rb") as file:
             self.label_encoder = pickle.load(file)

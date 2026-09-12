@@ -4,67 +4,31 @@ AgniDrishti - Explainable AI Module
 Generates SHAP explanations for the primary fire-type classifier.
 """
 
-from pathlib import Path
-import pickle
-
-import numpy as np
-import pandas as pd
-import shap
-
-
-BASE_DIR = Path(__file__).resolve().parent
-MODEL_DIR = BASE_DIR / "models"
-
-MODEL_PATH = MODEL_DIR / "fire_type_classifier_final.pkl"
-FEATURES_PATH = MODEL_DIR / "fire_type_features_final.pkl"
+from xgboost import DMatrix
+from predict_fire_type import predictor
 
 
 class FireTypeExplainer:
-
     def __init__(self):
-        with open(MODEL_PATH, "rb") as file:
-            self.model = pickle.load(file)
-
-        with open(FEATURES_PATH, "rb") as file:
-            self.feature_names = pickle.load(file)
-
-        self.explainer = shap.TreeExplainer(self.model)
+        # Reuse the loaded model. Native XGBoost TreeSHAP avoids importing
+        # SHAP/Numba and loading a second pickle for each dashboard request.
+        self.model = predictor.model
+        self.feature_names = predictor.feature_names
 
     def prepare_input(self, data):
-        from predict_fire_type import predictor
         return predictor.prepare_features(data)
 
     def explain(self, data):
         X = self.prepare_input(data)
-
-        shap_values = self.explainer.shap_values(X)
-
-        # Handle different SHAP output formats
-        if isinstance(shap_values, list):
-            values = np.asarray(shap_values)
-            predicted_class = int(
-                self.model.predict(X)[0]
-            )
-            class_values = values[predicted_class][0]
-
-        elif isinstance(shap_values, np.ndarray):
-
-            if shap_values.ndim == 3:
-                predicted_class = int(
-                    self.model.predict(X)[0]
-                )
-                class_values = shap_values[0, :, predicted_class]
-
-            elif shap_values.ndim == 2:
-                class_values = shap_values[0]
-
-            else:
-                class_values = shap_values.flatten()
-
-        else:
-            raise ValueError(
-                "Unsupported SHAP output format."
-            )
+        if len(X) != 1:
+            raise ValueError("Explain one observation at a time.")
+        booster = self.model.get_booster()
+        matrix = DMatrix(X, nthread=2)
+        predicted_class = int(self.model.predict(X)[0])
+        # shape: observations, classes, features + expected value.
+        shap_values = booster.predict(matrix, pred_contribs=True, strict_shape=True)
+        class_values = shap_values[0, predicted_class, :-1]
+        base_value = float(shap_values[0, predicted_class, -1])
 
         contributions = []
 
@@ -91,6 +55,8 @@ class FireTypeExplainer:
         )
 
         return {
+            "base_value": base_value,
+            "source": "XGBoost native TreeSHAP",
             "top_positive_factors": [
                 item
                 for item in contributions

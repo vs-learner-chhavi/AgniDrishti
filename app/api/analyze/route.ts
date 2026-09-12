@@ -23,7 +23,7 @@ export async function POST(request: Request) {
     const result = { classification, fireType: classification, confidence: p.confidence * 100,
       probabilities: p.probabilities, explanations, risk: 'UNASSESSED',
       positiveFactors: analysis.explanation.top_positive_factors, negativeFactors: analysis.explanation.top_negative_factors,
-      model: 'Trained XGBoost fire-type classifier', xai: { source: 'SHAP TreeExplainer', all_contributions: explanations } };
+      model: 'Trained XGBoost fire-type classifier', xai: { source: 'XGBoost native TreeSHAP', all_contributions: explanations } };
     return NextResponse.json({ ok: true, analysis, event: {
       hotspot: { latitude: body.latitude, longitude: body.longitude, brightness: f.brightness, frp: f.frp, confidence: f.confidence_score },
       persistence: { score: f.persistence_score * 100, activeDays: f.active_days_30d, windowDays: 30 },

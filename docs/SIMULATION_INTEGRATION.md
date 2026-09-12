@@ -58,3 +58,21 @@ The Python suite checks 100 sampled rows against the existing training feature t
 A failed Python setup, absent model files or invalid inputs must show an error in the lab. No test point should be added on failure. Model outputs are probabilities, not calibrated guarantees that a fire type is correct.
 
 Verified in this change: production build and typecheck passed; all four Python tests passed, including parity with 100 dataset rows; nine HTTP checks passed against the actual saved model. Interactive browser verification is pending because the available cloud browser blocked the workspace localhost address.
+
+## Diagnosing slow inference
+
+The dashboard now loads the model once per request, limits XGBoost to two threads,
+and uses its native TreeSHAP implementation. It no longer imports SHAP/Numba on
+the request path. Native contributions matched the prior SHAP implementation on
+25 sampled rows (all 27 features). Model weights and input definitions are unchanged.
+
+If a prediction is still slow, stop the dev server and run:
+
+```bash
+.venv/bin/python ml/check_inference.py
+```
+
+This prints Python/platform details and the current stage, then either a result or
+a diagnostic timeout after 90 seconds. The dashboard keeps its 60-second limit but
+now identifies the stage where it timed out. Share the diagnostic output if it
+fails; do not reinstall dependencies or retrain the model speculatively.
