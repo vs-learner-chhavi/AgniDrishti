@@ -16,6 +16,7 @@ import {
   Mountain,
   Phone,
   RefreshCw,
+  Satellite,
   ShieldAlert,
   ShieldCheck,
   Sparkles,
@@ -906,11 +907,12 @@ export default function Home() {
 
                   if (e) analyze(e);
                 }}
-                mode={'thermal' as any}
+                mode={'detections' as any}
                 layers={{
-                  thermal: true,
-                  context: true,
-                  ai: true,
+                  facilities: true,
+                  halos: true,
+                  labels: true,
+                  imagery: false,
                 }}
               />
 
