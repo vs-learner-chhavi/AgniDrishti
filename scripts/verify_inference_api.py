@@ -39,7 +39,7 @@ if __name__ == '__main__':
             raise RuntimeError('Preview server did not start; run npm run build first.')
         with urllib.request.urlopen(BASE) as response:
             html = response.read().decode()
-        for label in ['Thermal density', 'Final 24h', 'Final 7 days', 'Final 30 days', 'Show demos', 'Browse visible detections']:
+        for label in ['Detections', 'Density', 'FINAL 24H', 'FINAL 7 DAYS', 'FINAL 30 DAYS', 'Show demos', 'View technical evidence']:
             assert label in html, f'Missing monitor control: {label}'
         status, context = post('/api/context', {'latitude': 22.35, 'longitude': 69.85})
         assert status == 200 and context['ok'], context
