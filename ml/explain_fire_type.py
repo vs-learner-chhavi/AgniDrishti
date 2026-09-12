@@ -31,21 +31,8 @@ class FireTypeExplainer:
         self.explainer = shap.TreeExplainer(self.model)
 
     def prepare_input(self, data):
-        if isinstance(data, dict):
-            df = pd.DataFrame([data])
-        else:
-            df = data.copy()
-
-        for feature in self.feature_names:
-            if feature not in df.columns:
-                df[feature] = 0
-
-        df = df[self.feature_names]
-        df = df.apply(pd.to_numeric, errors="coerce")
-        df = df.replace([np.inf, -np.inf], np.nan)
-        df = df.fillna(0)
-
-        return df
+        from predict_fire_type import predictor
+        return predictor.prepare_features(data)
 
     def explain(self, data):
         X = self.prepare_input(data)

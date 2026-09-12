@@ -41,26 +41,12 @@ class FireTypePredictor:
                 "Input must be a dictionary or pandas DataFrame."
             )
 
-        # Add missing features with default values
-        for feature in self.feature_names:
-            if feature not in df.columns:
-                df[feature] = 0
-
-        # Keep only features used during training
-        df = df[self.feature_names]
-
-        # Convert values to numeric
-        for column in self.feature_names:
-            df[column] = pd.to_numeric(
-                df[column],
-                errors="coerce"
-            )
-
-        # Replace invalid values
-        df = df.replace([np.inf, -np.inf], np.nan)
-
-        # Fill missing values
-        df = df.fillna(0)
+        missing = set(self.feature_names) - set(df.columns)
+        if missing:
+            raise ValueError(f"Missing model inputs: {', '.join(sorted(missing))}")
+        df = df[self.feature_names].apply(pd.to_numeric, errors="raise")
+        if not np.isfinite(df.to_numpy(dtype=float)).all():
+            raise ValueError("Model inputs must be finite numbers; missing evidence is not zero.")
 
         return df
 

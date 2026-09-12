@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   Activity,
@@ -26,6 +26,7 @@ import {
   Zap,
 } from 'lucide-react';
 import LiveMap from '@/components/LiveMap';
+import SimulationLab from '@/components/SimulationLab';
 
 type Explanation = {
   feature: string;
@@ -148,6 +149,7 @@ type Event = {
   distance: number;
   time: string;
   source?: string;
+  detectedAt?: string;
   landCover?: string;
   explanations?: Explanation[];
   facilities?: Facility[];
@@ -300,6 +302,7 @@ function toEvent(e: any): Event {
         : 'Unknown',
 
     source: e.source,
+    detectedAt: e.detectedAt,
     landCover: e.landCover,
 
     explanations: Array.isArray(e.explanations)
@@ -341,15 +344,11 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
   const [sim, setSim] = useState(false);
+  const closeSimulation = useCallback(() => setSim(false), []);
   const [toast, setToast] = useState('');
   const [alerts, setAlerts] = useState<string[]>([]);
   const [active, setActive] = useState('home');
   const [layers, setLayers] = useState(false);
-  const [brightness, setBrightness] = useState(350);
-  const [persistence, setPersistence] = useState(82);
-  const [simLocation, setSimLocation] = useState(
-    'Ahmedabad, Gujarat',
-  );
   const [pickedFacility, setPickedFacility] =
     useState<Facility | null>(null);
 
@@ -470,12 +469,7 @@ export default function Home() {
         body: JSON.stringify({
           latitude: e.lat,
           longitude: e.lon,
-          days: 7,
-          windowDays: 30,
-          brightnessKelvin: e.brightness,
-          persistence: e.persistence,
-          industrialDistanceKm: e.distance,
-          landCover: e.landCover || 'industrial',
+          detectedAt: e.detectedAt,
         }),
       });
 
@@ -493,7 +487,7 @@ export default function Home() {
         lat: h.latitude,
         lon: h.longitude,
         brightness: h.brightness,
-        confidence: h.confidence,
+        confidence: res.confidence,
         persistence:
           d.event.persistence?.score ?? e.persistence,
         distance:
@@ -537,70 +531,6 @@ export default function Home() {
         err instanceof Error
           ? err.message
           : 'Analysis failed',
-      );
-    } finally {
-      setAnalyzing(false);
-    }
-  };
-
-  const simulate = async () => {
-    setAnalyzing(true);
-
-    try {
-      const coords = simLocation
-        .toLowerCase()
-        .includes('mumbai')
-        ? [19.076, 72.878]
-        : simLocation
-              .toLowerCase()
-              .includes('delhi')
-          ? [28.614, 77.209]
-          : simLocation
-                .toLowerCase()
-                .includes('rajasthan')
-            ? [27.17, 73.21]
-            : [23.0225, 72.5714];
-
-      const r = await fetch('/api/events', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          latitude: coords[0],
-          longitude: coords[1],
-          brightnessKelvin: brightness,
-          persistenceScore: persistence,
-          industrialDistance: 0.7,
-          landCover: 'industrial',
-          location: `Simulated industrial event · ${simLocation}`,
-        }),
-      });
-
-      const d = await r.json();
-
-      if (!d.ok) {
-        throw new Error(d.error);
-      }
-
-      const n = toEvent(d.event);
-
-      setEvents((xs) => [n, ...xs]);
-      setSelected(n);
-      setSource('SIMULATION');
-
-      setToast(
-        `Live simulation added ${n.id} · ${n.cls} · ${n.confidence}%`,
-      );
-
-      setSim(false);
-
-      setTimeout(() => analyze(n), 150);
-    } catch (err) {
-      setToast(
-        err instanceof Error
-          ? err.message
-          : 'Simulation failed',
       );
     } finally {
       setAnalyzing(false);
@@ -905,7 +835,7 @@ export default function Home() {
                     (x) => x.id === id,
                   );
 
-                  if (e) analyze(e);
+                  if (e) setSelected(e);
                 }}
                 mode={'detections' as any}
                 layers={{
@@ -1828,13 +1758,13 @@ Recommended contact: ${c.authority} (${c.phone})`;
           </span>
 
           <h2>
-            Want to see the intelligence pipeline move?
+            How does the model handle a new anomaly?
           </h2>
 
           <p>
-            Generate a new hotspot, run the classifier, update
-            the map and push the result into the intelligence
-            feed.
+            Pick an exact location, set hypothetical thermal evidence, and
+            inspect a prediction from the trained model. Test points stay
+            separate from live incidents and alerts.
           </p>
         </div>
 
@@ -1873,97 +1803,7 @@ Recommended contact: ${c.authority} (${c.phone})`;
         </div>
       )}
 
-      {sim && (
-        <div
-          className="modalBackdrop"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) {
-              setSim(false);
-            }
-          }}
-        >
-          <div className="modal">
-            <button
-              className="modalClose"
-              onClick={() => setSim(false)}
-            >
-              ×
-            </button>
-
-            <div className="modalIcon">
-              <Zap size={18} />
-            </div>
-
-            <span className="label">SIMULATION LAB</span>
-
-            <h2>Create a new thermal event</h2>
-
-            <p>
-              This is a real application flow: the event is
-              classified by the same classifier, receives feature
-              contributions, appears on the map and is added to
-              Recent Intelligence.
-            </p>
-
-            <label>
-              Scenario location
-              <input
-                value={simLocation}
-                onChange={(e) =>
-                  setSimLocation(e.target.value)
-                }
-              />
-            </label>
-
-            <label>
-              Thermal intensity <b>{brightness} K</b>
-              <input
-                type="range"
-                min="280"
-                max="380"
-                value={brightness}
-                onChange={(e) =>
-                  setBrightness(Number(e.target.value))
-                }
-              />
-            </label>
-
-            <label>
-              Historical persistence <b>{persistence}%</b>
-              <input
-                type="range"
-                min="0"
-                max="100"
-                value={persistence}
-                onChange={(e) =>
-                  setPersistence(Number(e.target.value))
-                }
-              />
-            </label>
-
-            <div className="flow">
-              <span>HOTSPOT</span>
-              <ChevronRight />
-              <span>CONTEXT</span>
-              <ChevronRight />
-              <span>CLASSIFY</span>
-              <ChevronRight />
-              <span>XAI</span>
-            </div>
-
-            <button
-              className="primary full"
-              onClick={simulate}
-              disabled={analyzing}
-            >
-              <Sparkles size={16} />
-              {analyzing
-                ? 'Running pipeline…'
-                : 'Run AI simulation'}
-            </button>
-          </div>
-        </div>
-      )}
+      {sim && <SimulationLab onClose={closeSimulation} />}
     </main>
   );
 }
