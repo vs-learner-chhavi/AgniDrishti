@@ -9,7 +9,7 @@ type Factor = { feature: string; value?: number; shap_value?: number; contributi
 export type MonitorEvent = {
   id: string; name: string; lat: number; lon: number; cls: string; confidence: number;
   risk: string; brightness: number; persistence: number; distance: number; time: string;
-  datasetLabel?: ThermalSignal['datasetLabel']; detectedAt?: string; source?: string; landCover?: string; frp?: number; firmsConfidence?: number;
+  modelPrediction?: ThermalSignal['modelPrediction']; datasetLabel?: ThermalSignal['datasetLabel']; detectedAt?: string; source?: string; landCover?: string; frp?: number; firmsConfidence?: number;
   persistenceDays?: number; persistenceObservations?: number; persistenceWindow?: number;
   facilities?: { name: string; type: string; distanceKm: number; lat: number; lon: number }[];
   explanations?: { feature: string; contribution: number }[];
@@ -29,9 +29,9 @@ const emptyContext: Context = { facilities: [], unavailable: [] };
 const datasetClasses: Record<string,string> = {industrial_fire:'Industrial Fire',gas_flare:'Gas Flare',wildfire:'Wildfire',mining_thermal_source:'Mining thermal source',agricultural_burning:'Crop Burning'};
 function fromSignal(s: ThermalSignal): MonitorEvent {
   return { id: s.id, name: 'NASA FIRMS archived detection', lat: s.latitude, lon: s.longitude,
-    cls: datasetClasses[s.datasetLabel?.fireType || ''] || 'Unclassified thermal anomaly', datasetLabel: s.datasetLabel, confidence: 0, risk: s.frp >= 80 || s.brightness >= 355 ? 'CRITICAL' : s.frp >= 35 || s.brightness >= 340 ? 'HIGH' : 'MODERATE', brightness: s.brightness,
-    persistence: s.persistenceScore, persistenceDays: s.datasetLabel?.activeDays30d ?? s.persistenceDays, persistenceWindow: 30,
-    persistenceObservations: s.datasetLabel?.observations30d ?? s.persistenceObservations, distance: 99, time: `${s.time.slice(0, 2)}:${s.time.slice(2)} UTC`,
+    cls: datasetClasses[s.modelPrediction?.fire_type || ''] || 'Unclassified thermal anomaly', modelPrediction:s.modelPrediction, datasetLabel: s.datasetLabel, confidence: (s.modelPrediction?.confidence ?? 0)*100, risk: s.frp >= 80 || s.brightness >= 355 ? 'CRITICAL' : s.frp >= 35 || s.brightness >= 340 ? 'HIGH' : 'MODERATE', brightness: s.brightness,
+    persistence: s.persistenceScore, persistenceDays: s.modelPrediction?.activeDays30d ?? s.datasetLabel?.activeDays30d ?? s.persistenceDays, persistenceWindow: 30,
+    persistenceObservations: s.modelPrediction?.observations30d ?? s.datasetLabel?.observations30d ?? s.persistenceObservations, distance: 99, time: `${s.time.slice(0, 2)}:${s.time.slice(2)} UTC`,
     detectedAt: `${s.date}T${s.time.slice(0, 2)}:${s.time.slice(2)}:00Z`, source: 'NASA_ARCHIVE',
     frp: s.frp, firmsConfidence: s.confidence, landCover: 'unknown' };
 }
@@ -44,6 +44,7 @@ function factorText(f: Factor): string {
 
 export default function LiveMonitor({ demoEvents, onReview, onAlert, queuedIds }: { demoEvents: MonitorEvent[]; onReview: (event: MonitorEvent) => void; onAlert: (event: MonitorEvent) => void; queuedIds: string[] }) {
   const [signals, setSignals] = useState<ThermalSignal[]>([]);
+  const [modelSha,setModelSha]=useState('');
   const [archiveTo, setArchiveTo] = useState('');
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -72,9 +73,21 @@ export default function LiveMonitor({ demoEvents, onReview, onAlert, queuedIds }
     try {
       const r = await fetch('/data/firms-recent.json', { cache: 'no-store', signal: controller.signal });
       if (!r.ok) throw new Error('FIRMS archive could not be loaded.');
-      const data = await r.json();
+      const raw = await r.text();
+      const data = JSON.parse(raw);
+      let predictions: Record<string, ThermalSignal['modelPrediction']> = {};
+      try {
+        const response=await fetch('/data/firms-predictions.json',{cache:'no-store',signal:controller.signal});
+        if(!response.ok) throw new Error('Saved predictions unavailable; observations remain unclassified.');
+        const cache=await response.json();
+        const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(raw));
+        const sha=Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('');
+        if(cache.archiveSha!==sha) throw new Error('Saved predictions do not match this archive. Regenerate predictions.');
+        predictions=cache.results;setModelSha(cache.modelSha);
+      } catch(e) { if(controller.signal.aborted) throw e; setModelSha('');setError(e instanceof Error?e.message:'Predictions unavailable'); }
+
       const valid = (data.observations || []).filter((s: ThermalSignal) => Number.isFinite(s.latitude) && Number.isFinite(s.longitude) && Number.isFinite(s.brightness) && /^\d{4}-\d{2}-\d{2}$/.test(s.date));
-      setSignals(valid); setArchiveTo(data.to || ''); setTotal(data.totalRecentObservations || valid.length);
+      setSignals(valid.map((s:ThermalSignal)=>({...s,modelPrediction:predictions[s.id]}))); setArchiveTo(data.to || ''); setTotal(data.totalRecentObservations || valid.length);
     } catch (e) { if (!controller.signal.aborted) setError(e instanceof Error ? e.message : 'Archive unavailable.'); }
     finally { if (!controller.signal.aborted) setLoading(false); }
   }, []);
@@ -110,11 +123,11 @@ export default function LiveMonitor({ demoEvents, onReview, onAlert, queuedIds }
     return () => controller.abort();
   }, [id, selectedLat, selectedLon, contexts]);
   const context = contexts[id] || emptyContext;
-  const analysis = analyses[id];
+  const analysis = analyses[id] || (selected.modelPrediction?.factors ? {features:{active_days_30d:selected.modelPrediction.activeDays30d??0},explanation:{all_contributions:selected.modelPrediction.factors}} : undefined);
   const days = analysis?.features.active_days_30d ?? selected?.persistenceDays;
   const isDemo = selected?.source === 'DEMO';
   const hasDatasetClass = !!datasetClasses[selected.datasetLabel?.fireType || ''];
-  const hasClassification = hasDatasetClass || selected.confidence > 0;
+  const hasClassification = selected.confidence > 0;
   const select = useCallback((value: string) => { setSelectedId(value); setTechnical(false); setError(''); }, []);
   async function analyze() {
     if (!selected || isDemo) return;
@@ -124,7 +137,19 @@ export default function LiveMonitor({ demoEvents, onReview, onAlert, queuedIds }
     try {
       const r = await fetch('/api/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ latitude: event.lat, longitude: event.lon, detectedAt: event.detectedAt }), signal: controller.signal });
-      const data = await r.json(); if (!r.ok || !data.ok) throw new Error(data.error || 'Analysis unavailable.');
+      const raw = await r.text();
+      const data = JSON.parse(raw);
+      let predictions: Record<string, ThermalSignal['modelPrediction']> = {};
+      try {
+        const response=await fetch('/data/firms-predictions.json',{cache:'no-store',signal:controller.signal});
+        if(!response.ok) throw new Error('Saved predictions unavailable; observations remain unclassified.');
+        const cache=await response.json();
+        const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(raw));
+        const sha=Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('');
+        if(cache.archiveSha!==sha) throw new Error('Saved predictions do not match this archive. Regenerate predictions.');
+        predictions=cache.results;setModelSha(cache.modelSha);
+      } catch(e) { if(controller.signal.aborted) throw e; setModelSha('');setError(e instanceof Error?e.message:'Predictions unavailable'); }
+ if (!r.ok || !data.ok) throw new Error(data.error || 'Analysis unavailable.');
       const result = data.event.result;
       const updated: MonitorEvent = { ...event, cls: result.classification, confidence: result.confidence, risk: result.risk,
         firmsConfidence: data.event.hotspot.confidence, persistence: data.event.persistence.score, persistenceDays: data.event.persistence.activeDays,
@@ -151,14 +176,14 @@ export default function LiveMonitor({ demoEvents, onReview, onAlert, queuedIds }
      <div className="timeRail"><span>DATASET WINDOW</span>{[1,7,30].map(n=><button key={n} className={windowDays===n?'active':''} onClick={()=>setWindowDays(n)}>{n===1?'FINAL 24H':`FINAL ${n} DAYS`}</button>)}<em>Ends {archiveTo||'at latest archive record'} · applies to real detections and density</em></div>
      <div className="mapStage">
       <LiveMap events={mapEvents.map(e=>({id:e.id,latitude:e.lat,longitude:e.lon,risk:e.risk,confidence:e.confidence,classification:e.cls,brightness:e.brightness,persistence:e.persistence}))} densityEvents={density} facilities={context.facilities} selectedId={selected.id} onSelect={id=>{const e=mapEvents.find(x=>x.id===id);if(e)select(e.id)}} mode={mode} layers={layers}/>
-      {mode==='detections'?<div className="classLegend"><span><i className="unclassified"/>Unknown / unlabelled</span>{[['industrial','Industrial'],['flare','Gas flare'],['crop','Crop burning'],['wildfire','Wildfire'],['mining','Mining']].map(([colour,label])=><span key={colour}><i className={colour}/>{label}</span>)}{showDemo&&<><span><i className="industrial"/>Demo industrial</span><span><i className="flare"/>Demo flare</span><span><i className="crop"/>Demo crop</span><span><i className="wildfire"/>Demo wildfire</span></>}</div>:<div className="heatLegend"><span>REAL FIRMS OBSERVATION DENSITY</span><i/><div><small>LOW</small><small>HIGH</small></div></div>}
+      {mode==='detections'?<div className="classLegend"><span><i className="unclassified"/>Prediction unavailable</span>{[['industrial','Industrial'],['flare','Gas flare'],['crop','Crop burning'],['wildfire','Wildfire'],['mining','Mining']].map(([colour,label])=><span key={colour}><i className={colour}/>{label}</span>)}{showDemo&&<><span><i className="industrial"/>Demo industrial</span><span><i className="flare"/>Demo flare</span><span><i className="crop"/>Demo crop</span><span><i className="wildfire"/>Demo wildfire</span></>}</div>:<div className="heatLegend"><span>REAL FIRMS OBSERVATION DENSITY</span><i/><div><small>LOW</small><small>HIGH</small></div></div>}
       {layersOpen&&<div className="layerBox"><b>MAP LAYERS</b><label><input type="checkbox" checked={layers.facilities} onChange={e=>setLayers(v=>({...v,facilities:e.target.checked}))}/> Nearby industrial facilities</label>{mode==='detections'&&<label><input type="checkbox" checked={layers.halos} onChange={e=>setLayers(v=>({...v,halos:e.target.checked}))}/> Operational risk rings</label>}<label><input type="checkbox" checked={layers.labels} onChange={e=>setLayers(v=>({...v,labels:e.target.checked}))}/> Geographic labels</label><label><input type="checkbox" checked={layers.imagery} onChange={e=>setLayers(v=>({...v,imagery:e.target.checked}))}/> Satellite visual context</label><small>Satellite is a geographic basemap, not dated evidence. Switching layers preserves your current map position.</small></div>}
      </div>
     </div>
     <aside className="selectedPanel">
      <div className="selectedTop"><div><span className="label">SELECTED DETECTION</span><h3>{selected.id}</h3></div><div className="statusStack"><span className={`pill ${selected.risk.toLowerCase()}`}>{selected.risk}</span><small>NEEDS VERIFICATION</small></div></div>
      <div className="selectedPlace"><MapPin size={15}/><span>{selected.name}<small>{selected.lat.toFixed(4)}° N · {selected.lon.toFixed(4)}° E</small></span></div>
-     <div className="classification"><div><span>{hasDatasetClass?'DATASET LABEL':selected.confidence?'LIKELY SOURCE':'CLASSIFICATION STATUS'}</span><b>{hasClassification?selected.cls:'Unclassified thermal anomaly'}</b><small>{hasDatasetClass?'Rule-assigned label · not a model prediction or confirmed incident':isDemo?'Fixed demo classification':selected.datasetLabel?'Dataset marks this observation as unknown':'No matching dataset label'}</small></div>{selected.confidence>0&&<strong>{selected.confidence}%<small>confidence</small></strong>}</div>
+     <div className="classification"><div><span>{isDemo?'DEMO CLASSIFICATION':hasClassification?'MODEL PREDICTION':'CLASSIFICATION STATUS'}</span><b>{hasClassification?selected.cls:'Unclassified thermal anomaly'}</b><small>{isDemo?'Fixed demo classification':hasClassification?'Trained-model archive replay · requires verification':selected.modelPrediction?.error||'Prediction unavailable'}</small></div>{selected.confidence>0&&<strong>{selected.confidence.toFixed(1)}%<small>{isDemo?'demo score':'model probability'}</small></strong>}</div>
      <div className="contextCard"><Building2 size={16}/><div><span>NEAREST MAPPED FACILITY</span><b>{contextLoading===id?'Searching OpenStreetMap…':context.facilities[0]?.name||(context.unavailable.length>0?'Facility lookup unavailable':'No mapped facility within 10 km')}</b><small>{context.facilities[0]?.type?`${context.facilities[0]?.type} · `:''}{(context.facilities[0]?.distanceKm ?? 99)<99?`${(context.facilities[0]?.distanceKm ?? 99).toFixed(1)} km from detection`:'Coverage depends on OpenStreetMap completeness'}</small></div></div>
      <div className="signalGrid">
       <Signal icon={<Flame/>} label="Thermal intensity" value={`${selected.brightness} K`} note={selected.brightness>=335?'Very high':'Elevated'}/>
@@ -166,8 +191,8 @@ export default function LiveMonitor({ demoEvents, onReview, onAlert, queuedIds }
       <Signal icon={<ShieldCheck/>} label="FIRMS confidence" value={selected.firmsConfidence===undefined?'Unavailable':`${selected.firmsConfidence}%`} note="Detection quality"/>
       <Signal icon={<Gauge/>} label="Radiative power" value={selected.frp?`${selected.frp.toFixed(1)} MW`:'Unavailable'} note="NASA FIRMS FRP"/>
      </div>
-     <div className="evidenceSummary"><div className="xaiHead"><span><Sparkles size={14}/> {hasDatasetClass?'DATASET LABEL & CONTEXT':selected.confidence?'WHY THIS CLASSIFICATION?':'MODEL-READY EVIDENCE'}</span><b>{analyzing?'ENRICHING':'EVIDENCE'}</b></div><div className="reasonRow"><i>1</i><span>{context.facilities[0]?.name?`Located ${(context.facilities[0]?.distanceKm ?? 99).toFixed(1)} km from ${context.facilities[0]?.name}`:selected.landCover&&selected.landCover!=='unknown'?`${(selected.landCover ? selected.landCover.charAt(0).toUpperCase()+selected.landCover.slice(1) : 'Unknown')} land context surrounds this detection`:'No mapped industrial facility has been confirmed nearby'}</span></div><div className="reasonRow"><i>2</i><span>Thermal signal reached {selected.brightness} K — {selected.brightness>=335?'very high':'elevated'} intensity</span></div><div className="reasonRow"><i>3</i><span>Detected on {(days ?? 0)} of the past {selected.persistenceWindow||30} days — {(days ?? 0)>=10?'a persistent pattern':'an intermittent pattern'}</span></div><button className="technicalToggle" onClick={()=>setTechnical(v=>!v)}>View technical evidence <ChevronDown size={13} className={technical?'open':''}/></button>{technical&&<div className="technicalEvidence">{analysis ? analysis.explanation.all_contributions.map((f,i)=><div className="xaiRow" key={i}><span>{factorText(f)}</span><i><b style={{width:`${Math.min(100,Math.abs(f.shap_value||0)*20)}%`}}/></i><strong>{f.shap_value?.toFixed(2)}</strong></div>) : <><div className="reasonRow"><span>FRP</span><strong>{selected.frp?.toFixed(1)||'—'} MW</strong></div><div className="reasonRow"><span>FIRMS detection confidence</span><strong>{selected.firmsConfidence??'—'}%</strong></div><div className="reasonRow"><span>Persistence</span><strong>{days ?? '—'} of 30 days</strong></div><small>{isDemo?'Fixed demo evidence; no model-generated SHAP values.':selected.datasetLabel?`Saved label: ${selected.datasetLabel.fireType}. Rule-label quality: ${selected.datasetLabel.quality} (not model probability). Source: fire_type_dataset.parquet. Record: ${selected.datasetLabel.eventId}.`:'No unique dataset match; no label assigned.'}</small></>}</div>}{!hasClassification&&<small>Inputs are prepared for the classification model; no class is inferred here.</small>}</div>
-     <div className="provenance"><Clock3 size={14}/><div><b>{selected.time} · {isDemo?'DEMO':'VIIRS'}</b><span>{isDemo?'Illustrative demo scenario':selected.datasetLabel?'NASA FIRMS · Saved dataset label · History excludes observation day':'NASA FIRMS archive · Snapshot recurrence'}</span></div></div>
+     <div className="evidenceSummary"><div className="xaiHead"><span><Sparkles size={14}/> {hasClassification?'WHY THIS CLASSIFICATION?':'MODEL-READY EVIDENCE'}</span><b>{analyzing?'ENRICHING':'EVIDENCE'}</b></div>{analysis ? analysis.explanation.all_contributions.slice(0,3).map(f=><div className="reasonRow" key={f.feature}><i>{(f.shap_value||0)>0?'+':'−'}</i><span>{factorText(f)} — {(f.shap_value||0)>0?'increases':'decreases'} the model score</span></div>) : <><div className="reasonRow"><i>1</i><span>{context.facilities[0]?.name?`Located ${(context.facilities[0]?.distanceKm ?? 99).toFixed(1)} km from ${context.facilities[0]?.name}`:selected.landCover&&selected.landCover!=='unknown'?`${(selected.landCover ? selected.landCover.charAt(0).toUpperCase()+selected.landCover.slice(1) : 'Unknown')} land context surrounds this detection`:'No mapped industrial facility has been confirmed nearby'}</span></div><div className="reasonRow"><i>2</i><span>Thermal signal reached {selected.brightness} K — {selected.brightness>=335?'very high':'elevated'} intensity</span></div><div className="reasonRow"><i>3</i><span>Detected on {(days ?? 0)} of the past {selected.persistenceWindow||30} days — {(days ?? 0)>=10?'a persistent pattern':'an intermittent pattern'}</span></div></>}<button className="technicalToggle" onClick={()=>setTechnical(v=>!v)}>View technical evidence <ChevronDown size={13} className={technical?'open':''}/></button>{technical&&<div className="technicalEvidence">{!isDemo&&<p style={{fontSize:9,lineHeight:1.6}}>Reference dataset label: {datasetClasses[selected.datasetLabel?.fireType||'']||'Unknown'}. {hasDatasetClass&&hasClassification?(datasetClasses[selected.datasetLabel!.fireType]===selected.cls?'Agrees with model.':'Disagrees with model.') : ''}<br/>Model: {modelSha.slice(0,16)||'Unavailable'}<br/>Top three SHAP score contributions, not percentages. Archive replay; training membership unverified.</p>}{analysis ? analysis.explanation.all_contributions.map((f,i)=><div className="xaiRow" key={i}><span>{factorText(f)}</span><i><b style={{width:`${Math.min(100,Math.abs(f.shap_value||0)*20)}%`}}/></i><strong>{f.shap_value?.toFixed(2)}</strong></div>) : <><div className="reasonRow"><span>FRP</span><strong>{selected.frp?.toFixed(1)||'—'} MW</strong></div><div className="reasonRow"><span>FIRMS detection confidence</span><strong>{selected.firmsConfidence??'—'}%</strong></div><div className="reasonRow"><span>Persistence</span><strong>{days ?? '—'} of 30 days</strong></div><small>{isDemo?'Fixed demo evidence; no model-generated SHAP values.':selected.datasetLabel?`Saved label: ${selected.datasetLabel.fireType}. Rule-label quality: ${selected.datasetLabel.quality} (not model probability). Source: fire_type_dataset.parquet. Record: ${selected.datasetLabel.eventId}.`:'No unique dataset match; no label assigned.'}</small></>}</div>}{!hasClassification&&<small>Inputs are prepared for the classification model; no class is inferred here.</small>}</div>
+     <div className="provenance"><Clock3 size={14}/><div><b>{selected.time} · {isDemo?'DEMO':'VIIRS'}</b><span>{isDemo?'Illustrative demo scenario':selected.datasetLabel?'NASA FIRMS · Model archive replay · History excludes observation day':'NASA FIRMS archive · Snapshot recurrence'}</span></div></div>
      <div className="recommendation"><span>VERIFICATION REQUIRED</span><p>Satellite basemap is visual context, not proof of a current incident. Check dated imagery or ground reports before escalation.</p></div>
      <div className="panelActions"><button className="ghost" onClick={()=>{setMode('detections');setLayers(v=>({...v,imagery:!v.imagery}))}}><Satellite size={14}/>{layers.imagery?'Return to street map':'Inspect satellite view'}</button><button className={queuedIds.includes(id)?'alertCreated primary':'primary'} onClick={()=>onAlert(selected)} disabled={queuedIds.includes(id)}><Bell size={15}/> {queuedIds.includes(id)?'Alert queued':'Create alert'}</button></div>
     </aside>
