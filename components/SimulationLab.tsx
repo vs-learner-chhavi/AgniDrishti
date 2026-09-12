@@ -9,7 +9,7 @@ type Factor = { feature: string; value: number; shap_value: number };
 type Result = { id: string; mode: string; observation: { latitude: number; longitude: number; detectedAt: string };
   prediction: { fire_type: string; confidence: number; probabilities: Record<string, number> };
   features: Record<string, number>; explanation: { all_contributions: Factor[] };
-  context: { facilities: { name: string; type: string; distanceKm: number }[]; unavailable: string[]; source: string };
+  context: { facilities: { name: string; type: string; distanceKm: number; objectLabel?: string; osmUrl?: string; nameAvailable?: boolean }[]; unavailable: string[]; source: string };
   provenance: { modelSha256: string; highFrpThreshold: number; historyWindow: string } };
 const names: Record<string, string> = {
   brightness: 'Hotspot temperature', bright_t31: 'Secondary-band temperature', frp: 'Fire radiative power',
@@ -20,12 +20,32 @@ const names: Record<string, string> = {
   is_night: 'Night observation', night_fire_flag: 'Night observation', high_frp_flag: 'High radiative power',
   persistent_activity: 'Repeated activity', low_persistence_flag: 'Infrequent activity',
 };
+function probability(value: number) {
+  return value > 0 && value < .001 ? '<0.1%' : `${(value * 100).toFixed(1)}%`;
+}
+function contextMessage(result: Result) {
+  const category = ({ gas_flare: 'gas', industrial_fire: 'industrial', mining_thermal_source: 'mining' } as Record<string, string>)[result.prediction.fire_type];
+  if (!category) return 'Location context not assessed for this class: land-cover evidence is not connected to this simulation.';
+  if (result.context.unavailable.includes(category)) return `Location context unavailable: the ${category} snapshot is missing.`;
+  if (result.context.facilities.some(f => f.type === category)) return `Mapped ${category}-category features nearby. These are supporting context, not verification of the predicted thermal source.`;
+  return `Location context does not corroborate this prediction: no mapped ${category}-category features were found within 10 km in the available snapshot. This does not rule them out.`;
+}
 function describe(f: Factor) {
+  const flags: Record<string, [string, string]> = {
+    persistent_activity: ['Below the frequent-activity threshold', 'Frequent-activity threshold reached'],
+    persistent_source_flag: ['Below the persistent-source threshold', 'Persistent-source threshold reached'],
+    high_persistence_flag: ['Below the high-persistence threshold', 'High-persistence threshold reached'],
+    low_persistence_flag: ['More than 2 active days in the previous 30 days', 'At most 2 active days in the previous 30 days'],
+    high_frp_flag: ['Radiative power below the training cutoff', 'Radiative power meets the training cutoff'],
+    is_night: ['Daytime observation', 'Nighttime observation'],
+    night_fire_flag: ['Daytime observation', 'Nighttime observation'],
+  };
+  if (flags[f.feature]) return flags[f.feature][f.value === 1 ? 1 : 0];
   if (f.feature === 'active_days_30d') return `Activity on ${f.value} of the previous 30 days`;
   if (f.feature === 'active_days_7d') return `Activity on ${f.value} of the previous 7 days`;
   if (f.feature === 'brightness') return `A hotspot temperature of ${f.value.toFixed(1)} K`;
   if (f.feature === 'frp') return `${f.value.toFixed(1)} MW of fire radiative power`;
-  return `${names[f.feature] || f.feature.replaceAll('_', ' ')}: ${Number(f.value.toFixed(3))}`;
+  return `${names[f.feature] || f.feature.replaceAll('_', ' ').replace(/^./, c => c.toUpperCase())}: ${Number(f.value.toFixed(3))}`;
 }
 
 export default function SimulationLab({ onClose }: { onClose: () => void }) {
@@ -130,14 +150,16 @@ export default function SimulationLab({ onClose }: { onClose: () => void }) {
           <div className="scenarioCoordinates">{point ? `Lat ${point.latitude.toFixed(5)}, Lon ${point.longitude.toFixed(5)}` : 'No location selected'}<span>Test points only</span></div>
           {!latest ? <div className="scenarioEmpty"><FlaskConical size={26} /><h3>Your model result will appear here</h3><p>Every successful run adds a simulated point at your selected coordinates. No expected fire type is supplied to the model.</p></div> : <section className="scenarioResult" aria-live="polite">
             {dirty && <div className="scenarioNotice">Inputs changed. The result below belongs to the previous run.</div>}
-            <div className="scenarioResultHeading"><div><span className="eyebrow">{latest.id} · SIMULATED</span><h3>{labels[latest.prediction.fire_type] || latest.prediction.fire_type}</h3></div><strong>{(latest.prediction.confidence*100).toFixed(1)}%<small>model probability</small></strong></div>
+            <div className="scenarioResultHeading"><div><span className="eyebrow">{latest.id} · SIMULATED</span><p className="scenarioHelp">Thermal/history prediction</p><h3>{labels[latest.prediction.fire_type] || latest.prediction.fire_type}</h3></div><strong>{(latest.prediction.confidence*100).toFixed(1)}%<small>model probability · not verified likelihood</small></strong></div>
             <p className="scenarioHelp">{latest.observation.latitude.toFixed(5)}, {latest.observation.longitude.toFixed(5)} · {latest.observation.detectedAt.replace('T',' ')}<br />Detected on {latest.features.active_days_30d} of the previous 30 days in this hypothetical history.</p>
-            <div className="scenarioProbabilities">{Object.entries(latest.prediction.probabilities).sort((a,b)=>b[1]-a[1]).map(([key,value])=><div key={key}><span>{labels[key] || key}</span><meter min={0} max={1} value={value} /><b>{(value*100).toFixed(1)}%</b></div>)}</div>
+            <p className="scenarioNotice">{contextMessage(latest)}</p>
+            <p className="scenarioHelp">This model uses thermal and historical evidence only. Moving the point alone will not change its prediction. Model probability is not a verified chance of a fire at this location.</p>
+            <div className="scenarioProbabilities">{Object.entries(latest.prediction.probabilities).sort((a,b)=>b[1]-a[1]).map(([key,value])=><div key={key}><span>{labels[key] || key}</span><meter min={0} max={1} value={value} /><b>{probability(value)}</b></div>)}</div>
             <h4>Why this classification?</h4>
-            <ul className="scenarioReasons">{latest.explanation.all_contributions.slice(0,3).map(f=><li key={f.feature}><b>{describe(f)}</b><span>{f.shap_value > 0 ? 'Supports' : 'Weighs against'} this prediction, according to the model.</span></li>)}</ul>
-            <h4>Nearby infrastructure</h4><p className="scenarioHelp">OSM snapshot · Within 10 km · Supporting context, separate from the model explanation</p>
+            <ul className="scenarioReasons">{latest.explanation.all_contributions.slice(0,3).map(f=><li key={f.feature}><b>{describe(f)}</b><span>{f.feature === 'persistent_activity' && <>Activity: {latest.features.active_days_7d}/7 days and {latest.features.active_days_30d}/30 days. The flag requires at least 3/7 or 10/30 days. </>}{f.shap_value > 0 ? 'Increases' : 'Decreases'} the model’s score for this class; this is a learned association.</span></li>)}</ul>
+            <h4>Nearby infrastructure</h4><p className="scenarioHelp">OSM snapshot · Within 10 km · Mapped features, not detected fires. Distances are to representative map points, not site boundaries. Several mapped areas may belong to one operation.</p>
             {latest.context.unavailable.length > 0 && <p className="scenarioNotice">Missing snapshots: {latest.context.unavailable.join(', ')}. Download them with git lfs pull.</p>}
-            {latest.context.facilities.length ? <ul className="scenarioFacilities">{latest.context.facilities.slice(0,5).map((f,i)=><li key={i}><span>{f.name}<small>{f.type}</small></span><b>{f.distanceKm.toFixed(2)} km</b></li>)}</ul> : <p className="scenarioHelp">No sites found in the available snapshots within 10 km. This does not establish that no industry exists here.</p>}
+            {latest.context.facilities.length ? <ul className="scenarioFacilities">{latest.context.facilities.slice(0,5).map((f,i)=><li key={i}><span>{f.objectLabel || f.name}<small>{f.nameAvailable === false ? "Name unavailable in OSM · " : ""}{f.type}</small>{f.osmUrl && <a href={f.osmUrl} target="_blank" rel="noopener noreferrer">View OSM record ↗</a>}</span><b>{f.distanceKm.toFixed(2)} km</b></li>)}</ul> : <p className="scenarioHelp">No sites found in the available snapshots within 10 km. This does not establish that no industry exists here.</p>}
             <details className="scenarioDetails"><summary>View technical evidence</summary><p>SHAP values show contributions to the predicted class score; they are not percentages.</p>
               <table><thead><tr><th>Input</th><th>Value</th><th>SHAP</th></tr></thead><tbody>{latest.explanation.all_contributions.map(f=><tr key={f.feature}><td>{f.feature}</td><td>{Number(f.value.toFixed(4))}</td><td>{f.shap_value.toFixed(4)}</td></tr>)}</tbody></table>
               <p>Model SHA: <code>{latest.provenance.modelSha256.slice(0,16)}</code><br />High FRP cutoff: {latest.provenance.highFrpThreshold.toFixed(2)} MW<br />{latest.provenance.historyWindow}</p>

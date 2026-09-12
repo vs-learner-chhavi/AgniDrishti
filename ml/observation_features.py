@@ -112,7 +112,10 @@ def location_context(lat, lon):
         if not path.exists() or path.stat().st_size < 1000:
             unavailable.append(category)
             continue
-        points = pd.read_parquet(path, columns=['latitude', 'longitude', 'name'])
+        import pyarrow.parquet as pq
+        available = set(pq.read_schema(path).names)
+        columns = [c for c in ['latitude', 'longitude', 'name', 'landuse', 'osm_type', 'osm_id'] if c in available]
+        points = pd.read_parquet(path, columns=columns)
         points = points.dropna(subset=['latitude', 'longitude'])
         if points.empty:
             distances[category] = None
@@ -126,7 +129,14 @@ def location_context(lat, lon):
             if km[i] > 10:
                 continue
             point = points.iloc[i]
-            facilities.append({'name': str(point['name']) if pd.notna(point['name']) else f'Unnamed {category} site',
+            named = pd.notna(point.get('name')) and bool(str(point.get('name')).strip())
+            quarry = point.get('landuse') == 'quarry' if pd.notna(point.get('landuse')) else False
+            object_type = point.get('osm_type')
+            object_id = point.get('osm_id')
+            url = (f'https://www.openstreetmap.org/{object_type}/{int(object_id)}'
+                   if object_type in ('node', 'way', 'relation') and pd.notna(object_id) else None)
+            facilities.append({'objectLabel': str(point['name']) if named else ('Mapped quarry area' if quarry else f'Mapped {category} feature'),
+                'nameAvailable': named, 'osmUrl': url, 'name': str(point['name']) if pd.notna(point['name']) else f'Unnamed {category} site',
                 'type': category, 'latitude': float(point.latitude), 'longitude': float(point.longitude),
                 'distanceKm': float(km[i]), 'source': 'OSM snapshot'})
     facilities.sort(key=lambda x: x['distanceKm'])

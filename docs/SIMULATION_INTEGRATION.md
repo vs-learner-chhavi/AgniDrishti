@@ -76,3 +76,18 @@ This prints Python/platform details and the current stage, then either a result 
 a diagnostic timeout after 90 seconds. The dashboard keeps its 60-second limit but
 now identifies the stage where it timed out. Share the diagnostic output if it
 fails; do not reinstall dependencies or retrain the model speculatively.
+
+## UI interpretation and model-team follow-up
+
+The lab now labels its output as a thermal/history prediction, separately reports whether
+matching infrastructure categories are mapped within 10 km, and never treats proximity
+as verification. Missing snapshots and no matching mapped features have distinct messages.
+Binary SHAP inputs are described in words; frequent activity means at least 3/7 or 10/30
+active days. Small nonzero probabilities display as <0.1%. Quarry areas retain their OSM
+record links and identify missing names; they are not presented as detected mining fires.
+
+The model teammate owns reviewing weak label rules, excluded unknown examples, independent
+evaluation, probability calibration and an uncertainty/rejection strategy. In the saved
+training table, all 1,021 rows with persistent_activity=0 and active_days_30d>=3 were labelled
+gas_flare. That is a dataset observation, not proof of real gas flares. Do not alter UI outputs
+to force a different class, or treat location context as an input before retraining and validation.
