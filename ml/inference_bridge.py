@@ -14,7 +14,7 @@ def main():
     explanation = explain_fire_type(payload)
 
     prediction["xai"] = {
-        "source": "SHAP TreeExplainer",
+        "source": "XGBoost native TreeSHAP",
         "top_positive_factors": explanation["top_positive_factors"],
         "top_negative_factors": explanation["top_negative_factors"],
         "all_contributions": explanation["all_contributions"],

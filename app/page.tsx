@@ -1,8 +1,9 @@
 'use client';
-import {useEffect,useMemo,useState} from 'react';
+import {useCallback,useEffect,useMemo,useState} from 'react';
 import type {ReactNode} from 'react';
 import {Activity,AlertTriangle,Bell,ChevronRight,ClipboardList,Factory,Flame,Fuel,Layers3,MapPin,Mountain,Phone,RefreshCw,Search,ShieldAlert,ShieldCheck,Satellite,Sparkles,Sprout,Target,Wifi,Zap} from 'lucide-react';
-import LiveMap from '@/components/LiveMap';
+import LiveMonitor from '@/components/LiveMonitor';
+import SimulationLab from '@/components/SimulationLab';
 import HistoricalIntelligence from '@/components/HistoricalIntelligence';
 
 type Explanation={feature:string;contribution:number};
@@ -14,7 +15,7 @@ function elapsedLabel(ms:number){const m=Math.floor(ms/60000);if(m<1)return'just
 function nextStatus(s:'new'|'ack'|'resolved'):'new'|'ack'|'resolved'{return s==='new'?'ack':s==='ack'?'resolved':'new';}
 function statusLabel(s:'new'|'ack'|'resolved'){return s==='new'?'New':s==='ack'?'Acknowledged':'Resolved';}
 
-type Event={id:string;name:string;lat:number;lon:number;cls:string;confidence:number;risk:string;brightness:number;persistence:number;distance:number;time:string;source?:string;landCover?:string;explanations?:Explanation[];facilities?:Facility[]};
+type Event={id:string;name:string;lat:number;lon:number;cls:string;confidence:number;risk:string;brightness:number;persistence:number;distance:number;time:string;source?:string;detectedAt?:string;landCover?:string;explanations?:Explanation[];facilities?:Facility[]};
 const seed:Event[]=[
 {id:'TG-1042',name:'Historical recurring source · Jharkhand',lat:23.77591,lon:86.38096,cls:'Industrial Fire',confidence:91,risk:'CRITICAL',brightness:342,persistence:88,distance:.7,time:'14:32 IST',source:'DEMO',landCover:'industrial'},
 {id:'TG-1037',name:'Gas infrastructure · Rajasthan',lat:27.17,lon:73.21,cls:'Gas Flare',confidence:96,risk:'HIGH',brightness:329,persistence:97,distance:1.1,time:'13:58 IST',source:'DEMO',landCover:'industrial'},
@@ -40,7 +41,7 @@ function normalizeExplanation(x: any): Explanation {
     contribution: Number.isFinite(contribution) ? contribution : 0,
   };
 }
-function toEvent(e:any):Event{return {id:e.id,name:e.location||e.name||`${e.classification} · ${Number(e.latitude).toFixed(2)}, ${Number(e.longitude).toFixed(2)}`,lat:Number(e.latitude),lon:Number(e.longitude),cls:e.classification,confidence:Number(e.confidence)||0,risk:e.risk||'MODERATE',brightness:Number(e.brightnessKelvin)||0,persistence:Number(e.persistenceScore)||0,distance:Number(e.industrialDistance)||99,time:new Date(e.detectedAt).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Kolkata'})+' IST',source:e.source,landCover:e.landCover,explanations: Array.isArray(e.explanations)
+function toEvent(e:any):Event{return {id:e.id,name:e.location||e.name||`${e.classification} · ${Number(e.latitude).toFixed(2)}, ${Number(e.longitude).toFixed(2)}`,lat:Number(e.latitude),lon:Number(e.longitude),cls:e.classification,confidence:Number(e.confidence)||0,risk:e.risk||'MODERATE',brightness:Number(e.brightnessKelvin)||0,persistence:Number(e.persistenceScore)||0,distance:Number(e.industrialDistance)||99,time:new Date(e.detectedAt).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Kolkata'})+' IST',source:e.source,detectedAt:e.detectedAt,landCover:e.landCover,explanations: Array.isArray(e.explanations)
   ? e.explanations.map(normalizeExplanation)
   : Array.isArray(e.xai?.all_contributions)
     ? e.xai.all_contributions.map(normalizeExplanation)
@@ -48,7 +49,8 @@ function toEvent(e:any):Event{return {id:e.id,name:e.location||e.name||`${e.clas
 function riskClass(r:string){return r.toLowerCase();}
 
 export default function Home(){
- const[events,setEvents]=useState<Event[]>(seed),[selected,setSelected]=useState<Event>(seed[0]),[q,setQ]=useState(''),[filter,setFilter]=useState('ALL'),[source,setSource]=useState('DEMO_DATA'),[loading,setLoading]=useState(true),[analyzing,setAnalyzing]=useState(false),[sim,setSim]=useState(false),[toast,setToast]=useState(''),[alerts,setAlerts]=useState<string[]>([]),[active,setActive]=useState('home'),[layers,setLayers]=useState(false),[brightness,setBrightness]=useState(350),[persistence,setPersistence]=useState(82),[simLocation,setSimLocation]=useState('Ahmedabad, Gujarat'),[checklist,setChecklist]=useState<Record<string,boolean[]>>({}),[pickedFacility,setPickedFacility]=useState<Facility|null>(null),[alertMeta,setAlertMeta]=useState<Record<string,{createdAt:number;status:'new'|'ack'|'resolved'}>>({}),[now,setNow]=useState(Date.now());
+ const[events,setEvents]=useState<Event[]>(seed),[selected,setSelected]=useState<Event>(seed[0]),[q,setQ]=useState(''),[filter,setFilter]=useState('ALL'),[source,setSource]=useState('DEMO_DATA'),[loading,setLoading]=useState(true),[analyzing,setAnalyzing]=useState(false),[sim,setSim]=useState(false),[toast,setToast]=useState(''),[alerts,setAlerts]=useState<string[]>([]),[active,setActive]=useState('home'),[checklist,setChecklist]=useState<Record<string,boolean[]>>({}),[pickedFacility,setPickedFacility]=useState<Facility|null>(null),[alertMeta,setAlertMeta]=useState<Record<string,{createdAt:number;status:'new'|'ack'|'resolved'}>>({}),[now,setNow]=useState(Date.now());
+ const closeSimulation=useCallback(()=>setSim(false),[]);
  const visible=useMemo(()=>events.filter(e=>(filter==='ALL'||e.risk===filter)&&(!q||`${e.id} ${e.name} ${e.cls}`.toLowerCase().includes(q.toLowerCase()))),[events,filter,q]);
  const critical=events.filter(e=>e.risk==='CRITICAL'||e.risk==='HIGH').length,persistent=events.filter(e=>e.persistence>=70).length,avg=events.length?events.reduce((a,e)=>a+e.confidence,0)/events.length:0;
  const scroll=(id:string)=>{setActive(id);document.getElementById(id)?.scrollIntoView({behavior:'smooth',block:'start'});};
@@ -57,22 +59,94 @@ export default function Home(){
  useEffect(()=>{const t=setInterval(()=>setNow(Date.now()),15000);return()=>clearInterval(t)},[]);
  useEffect(()=>{load();const t=setInterval(load,60000);return()=>clearInterval(t)},[]);
  useEffect(()=>{if(!toast)return;const t=setTimeout(()=>setToast(''),4000);return()=>clearTimeout(t)},[toast]);
- const analyze=async(e:Event)=>{setSelected(e);setAnalyzing(true);try{const r=await fetch('/api/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({latitude:e.lat,longitude:e.lon,days:7,windowDays:30,brightnessKelvin:e.brightness,persistence:e.persistence,industrialDistanceKm:e.distance,landCover:e.landCover||'industrial'})});const d=await r.json();if(!d.ok)throw new Error(d.error);const h=d.event.hotspot,res=d.event.result,updated={...e,lat:h.latitude,lon:h.longitude,brightness:h.brightness,confidence:h.confidence,persistence:d.event.persistence?.score??e.persistence,distance:d.event.nearestFacility?.distanceKm??e.distance,cls:res.classification,risk:res.risk,explanations:res.explanations,source:d.event.source,facilities:(d.event.facilities||[]).map((f:any)=>({name:f.name||'Unnamed facility',type:f.type||'industrial',distanceKm:Number(f.distanceKm)||0,lat:Number(f.latitude)||0,lon:Number(f.longitude)||0}))};setEvents(xs=>xs.map(x=>x.id===e.id?updated:x));setSelected(updated);setToast(`${updated.id} analyzed · ${updated.cls} · ${updated.confidence}%`);}catch(err){setToast(err instanceof Error?err.message:'Analysis failed')}finally{setAnalyzing(false)}};
- const simulate=async()=>{setAnalyzing(true);try{const coords=simLocation.toLowerCase().includes('mumbai')?[19.076,72.878]:simLocation.toLowerCase().includes('delhi')?[28.614,77.209]:simLocation.toLowerCase().includes('rajasthan')?[27.17,73.21]:[23.0225,72.5714];const r=await fetch('/api/events',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({latitude:coords[0],longitude:coords[1],brightnessKelvin:brightness,persistenceScore:persistence,industrialDistance:0.7,landCover:'industrial',location:`Simulated industrial event · ${simLocation}`})});const d=await r.json();if(!d.ok)throw new Error(d.error);const n=toEvent(d.event);setEvents(xs=>[n,...xs]);setSelected(n);setSource('SIMULATION');setToast(`Live simulation added ${n.id} · ${n.cls} · ${n.confidence}%`);setSim(false);setTimeout(()=>analyze(n),150);}catch(err){setToast(err instanceof Error?err.message:'Simulation failed')}finally{setAnalyzing(false)}};
- const generateAlert=()=>{if(alerts.includes(selected.id)){setToast(`${selected.id} is already in the alert queue`);return}setAlerts(a=>[selected.id,...a]);setAlertMeta(m=>({...m,[selected.id]:{createdAt:Date.now(),status:'new'}}));fetch('/api/alerts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({eventId:selected.id,severity:selected.risk,message:`${selected.cls} at ${selected.name} · ${selected.confidence}% confidence`})}).catch(()=>{});setToast(`Priority alert created for ${selected.id}`);scroll('alerts')};
+  const analyze = async (e: Event) => {
+    setSelected(e);
+    setAnalyzing(true);
+
+    try {
+      const r = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          latitude: e.lat,
+          longitude: e.lon,
+          detectedAt: e.detectedAt,
+        }),
+      });
+
+      const d = await r.json();
+
+      if (!d.ok) {
+        throw new Error(d.error);
+      }
+
+      const h = d.event.hotspot;
+      const res = d.event.result;
+
+      const updated: Event = {
+        ...e,
+        lat: h.latitude,
+        lon: h.longitude,
+        brightness: h.brightness,
+        confidence: res.confidence,
+        persistence:
+          d.event.persistence?.score ?? e.persistence,
+        distance:
+          d.event.nearestFacility?.distanceKm ??
+          e.distance,
+        cls: res.classification,
+        risk: res.risk,
+
+        explanations: Array.isArray(res.explanations)
+          ? res.explanations.map(normalizeExplanation)
+          : Array.isArray(d.event.xai?.all_contributions)
+            ? d.event.xai.all_contributions.map(
+                normalizeExplanation,
+              )
+            : fallbackXai,
+
+        source: d.event.source,
+
+        facilities: (d.event.facilities || []).map(
+          (f: any) => ({
+            name: f.name || 'Unnamed facility',
+            type: f.type || 'industrial',
+            distanceKm: Number(f.distanceKm) || 0,
+            lat: Number(f.latitude) || 0,
+            lon: Number(f.longitude) || 0,
+          }),
+        ),
+      };
+
+      setEvents((xs) =>
+        xs.map((x) => (x.id === e.id ? updated : x)),
+      );
+
+      setSelected(updated);
+
+      setToast(
+        `${updated.id} analyzed · ${updated.cls} · ${updated.confidence}%`,
+      );
+    } catch (err) {
+      setToast(
+        err instanceof Error
+          ? err.message
+          : 'Analysis failed',
+      );
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+ const queueAlert=(event:Event)=>{if(alerts.includes(event.id)){setToast(`${event.id} is already in the alert queue`);return}setSelected(event);setEvents(xs=>xs.some(x=>x.id===event.id)?xs:[event,...xs]);setAlerts(a=>[event.id,...a]);setAlertMeta(m=>({...m,[event.id]:{createdAt:Date.now(),status:'new'}}));if(!['DEMO','NASA_ARCHIVE'].includes(event.source||''))fetch('/api/alerts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({eventId:event.id,severity:event.risk,message:`${event.cls} at ${event.name} · ${event.confidence}% confidence`})}).catch(()=>{});setToast(`${event.source==='NASA_ARCHIVE'?'Archive review':event.source==='DEMO'?'Demo review':'Priority'} alert queued for ${event.id}`);scroll('alerts')};
+ const generateAlert=()=>queueAlert(selected);
  return <main className="app">
   <nav className="topnav"><button className="navbrand" onClick={()=>scroll('home')}><span className="brandmark"><Flame size={19}/></span><span><b>AgniDrishti</b><small>THERMAL INTELLIGENCE</small></span></button><div className="navlinks">{[['home','Overview'],['monitor','Live Monitor'],['intelligence','Intelligence'],['analytics','Analytics'],['history','History'],['alerts','Alerts']].map(([id,label])=><button key={id} className={active===id?'active':''} onClick={()=>scroll(id)}>{label}{id==='alerts'&&alerts.filter(a=>alertMeta[a]?.status!=='resolved').length>0&&<em>{alerts.filter(a=>alertMeta[a]?.status!=='resolved').length}</em>}</button>)}</div><div className="navright"><span className="online"><i/> SYSTEM ONLINE</span><button className="navsimulate" onClick={()=>setSim(true)}><Zap size={15}/> Simulate</button></div></nav>
   <section id="home" className="hero section"><div className="heroCopy"><span className="eyebrow"><span className="livePulse"/> NASA FIRMS · OSM · SATELLITE · EXPLAINABLE AI</span><h1>Turn thermal anomalies into<br/><span>actionable intelligence.</span></h1><p>AgniDrishti detects hotspots, enriches them with industrial and geographic context, classifies the likely source, scores risk, and explains the evidence behind every decision.</p><div className="heroActions"><button className="primary" onClick={()=>scroll('monitor')}><Satellite size={17}/> Explore live monitor <ChevronRight size={16}/></button><button className="secondary" onClick={()=>setSim(true)}><Sparkles size={16}/> Run AI simulation</button></div><div className="heroProof"><span><ShieldCheck size={15}/> Multisource evidence</span><span><Target size={15}/> 5 source classes</span><span><Activity size={15}/> Explainable decisions</span></div></div><div className="heroVisual"><div className="orb"><div className="orbCore"><Flame size={34}/><b>{loading?'—':events.length}</b><small>ACTIVE HOTSPOTS</small></div><span className="ring r1"/><span className="ring r2"/><span className="ring r3"/><i className="scanline"/></div><div className="heroCard"><span className="label">CURRENT SIGNAL</span><b>{selected.cls}</b><span>{selected.lat.toFixed(2)}° N · {selected.lon.toFixed(2)}° E</span><strong>{selected.confidence}% <small>AI confidence</small></strong></div></div></section>
   <section className="metrics section"><Stat icon={<Flame/>} label="Active thermal events" value={loading?'…':events.length} sub={source==='POSTGRES'?'LIVE DATABASE':'DEMO / FALLBACK'}/><Stat icon={<Activity/>} label="Persistent sources" value={loading?'…':persistent} sub="70%+ historical recurrence"/><Stat icon={<AlertTriangle/>} label="High + critical" value={loading?'…':critical} sub="Risk-prioritized" hot/><Stat icon={<ShieldCheck/>} label="Average confidence" value={loading?'…':`${avg.toFixed(1)}%`} sub="Current event set"/></section>
-  <section id="monitor" className="section sectionBlock"><SectionHeading kicker="01 · LIVE MONITOR" title="See the heat. Follow the signal." text="A geographic operating picture that updates as intelligence changes." action={<button className="ghost" onClick={load} disabled={loading}><RefreshCw size={14}/> {loading?'Syncing':'Refresh data'}</button>}/><div className="monitorGrid"><div className="mapShell"><div className="mapHeader"><div><span className="label">INDIA · THERMAL ACTIVITY</span><b><span className="greenDot"/> {source==='POSTGRES'?'LIVE DATABASE':'DEMO + SIMULATION DATA'}</b></div><div className="mapTools"><button onClick={()=>setLayers(v=>!v)}><Layers3 size={14}/> Layers</button><button onClick={()=>setFilter(filter==='ALL'?'CRITICAL':'ALL')}><Target size={14}/> {filter==='ALL'?'Focus risk':'Show all'}</button></div></div><div className="mapStage"><LiveMap
-  events={visible.map(e=>({id:e.id,latitude:e.lat,longitude:e.lon,risk:e.risk,confidence:e.confidence,classification:e.cls,brightness:e.brightness,persistence:e.persistence}))}
-  densityEvents={[]}
-  facilities={[]}
-  selectedId={selected.id}
-  onSelect={id=>{const e=events.find(x=>x.id===id);if(e)analyze(e)}}
-  mode={'thermal' as any}
-  layers={{thermal:true,context:true,ai:true} as any}
-/><div className="mapOverlay"><span>THERMAL LAYER</span><span>CONTEXT LAYER</span><span>AI LAYER</span></div>{layers&&<div className="layerBox"><b>INTELLIGENCE LAYERS</b><label><input type="checkbox" defaultChecked/> Thermal anomaly intensity</label><label><input type="checkbox" defaultChecked/> Risk halos</label><label><input type="checkbox" defaultChecked/> Industrial context</label><label><input type="checkbox"/> Satellite imagery</label><small>Live satellite imagery requires a configured imagery provider.</small></div>}</div></div><aside className="selectedPanel"><div className="selectedTop"><div><span className="label">SELECTED EVENT</span><h3>{selected.id}</h3></div><span className={`pill ${riskClass(selected.risk)}`}>{selected.risk}</span></div><div className="selectedPlace"><MapPin size={15}/>{selected.name}</div><div className="classification"><div><span>AI CLASSIFICATION</span><b>{selected.cls}</b></div><strong>{selected.confidence}%<small>confidence</small></strong></div><div className="metricGrid"><Metric label="Brightness" value={`${selected.brightness} K`}/><Metric label="Persistence" value={`${selected.persistence}%`}/><Metric label="Industrial distance" value={`${selected.distance.toFixed(1)} km`}/><Metric label="Land context" value={selected.landCover||'unknown'}/></div><div className="xaiBox"><div className="xaiHead"><span><Sparkles size={14}/> MODEL EXPLANATION</span><b>{analyzing?'ANALYZING':'EXPLAINABLE'}</b></div><p>Feature contributions for the current classifier decision.</p>{(selected.explanations||fallbackXai).map((x,i)=><div className="xaiRow" key={`${x.feature}-${i}`}><span>{x.feature}</span><i><b style={{width:`${Math.min(100,Math.max(6,Math.abs(x.contribution)*100/0.45))}%`}}/></i><strong className={x.contribution<0?'negative':''}>{x.contribution>0?'+':''}{x.contribution.toFixed(2)}</strong></div>)}</div><button className="primary full" onClick={generateAlert}><Bell size={15}/> Generate priority alert <ChevronRight size={15}/></button></aside></div></section>
+  <LiveMonitor demoEvents={seed} queuedIds={alerts} onAlert={queueAlert} onReview={e=>{setSelected(e);setEvents(xs=>xs.some(x=>x.id===e.id)?xs.map(x=>x.id===e.id?e:x):[e,...xs]);scroll('intelligence')}} />
   <section id="intelligence" className="section sectionBlock"><SectionHeading kicker="02 · INTELLIGENCE" title="Evidence to action." text="Inspect the signals behind the selected event, compare likely sources, and refresh the decision only when you choose."/><div className="intelGrid"><div className="evidenceCard"><div className="cardTitle"><div><span className="label">LIVE EVIDENCE</span><h2>What supports this decision</h2></div><span className="pill moderate">VERIFIED INPUTS</span></div>{[["01","Thermal signal","Brightness, FIRMS confidence and radiative context",`${selected.brightness} K · ${selected.confidence}% FIRMS confidence`],["02","Spatial context","Industrial proximity and land-cover context",`${selected.distance.toFixed(1)} km to nearest facility · ${selected.landCover||'unknown'} land cover`],["03","Temporal history","Persistence and recurrence across the analysis window",`${selected.persistence}% persistence score · 30-day context`],["04","Satellite verification","Source imagery and observation provenance",`${selected.source||'DEMO'} observation · ${selected.time}`]].map(([n,t,d,v])=><details className="evidenceDetail" key={n}><summary className="evidenceRow"><b>{n}</b><div><strong>{t}</strong><span>{d}</span></div><ChevronRight size={15}/></summary><div className="evidenceValue"><span>{v}</span><i><b style={{width:`${n==='01'?Math.min(100,selected.confidence):n==='02'?Math.max(8,100-selected.distance*3):n==='03'?selected.persistence:75}%`}}/></i></div></details>)}</div><div className="decisionCard"><div className="cardTitle"><div><span className="label">DECISION WORKSPACE</span><h2>Why this source?</h2></div><span className={`pill ${riskClass(selected.risk)}`}>{selected.risk}</span></div><div className="decisionClass"><ClassIcon cls={selected.cls}/><div><small>LIKELY SOURCE</small><b>{selected.cls}</b><span className="decisionMeta">Event {selected.id} · {selected.time}</span></div><strong>{selected.confidence}%<small>confidence</small></strong></div><div className="confidenceList">{[selected.cls,'Gas Flare','Industrial Fire','Wildfire','Crop Burning'].filter((v,i,a)=>a.indexOf(v)===i).slice(0,5).map((label,i)=>{const score=i===0?selected.confidence:Math.max(1,Math.round((100-selected.confidence)/(i+1)));return <div key={label}><span>{label}</span><i><b style={{width:`${score}%`}}/></i><strong>{score}%</strong></div>})}</div><div className="riskMeter"><span>RISK EXPOSURE</span><i><b style={{width:`${selected.risk==='CRITICAL'?94:selected.risk==='HIGH'?76:selected.risk==='MODERATE'?52:28}%`}}/></i><em>{selected.risk}</em></div><p className="decisionNote">The score is tied to this event's stored evidence. Selecting another event changes the workspace; it does not recompute the model.</p><div className="decisionActions"><button className="ghost" onClick={()=>analyze(selected)} disabled={analyzing}><RefreshCw size={14}/>{analyzing?'Refreshing…':'Refresh analysis'}</button><button className="ghost" onClick={()=>setToast('Analysis is locked to the selected event until refresh is requested.')}> <ShieldCheck size={14}/>Lock decision</button></div></div></div></section>
   <section id="analytics" className="section sectionBlock"><SectionHeading kicker="03 · ANALYTICS" title="Understand patterns, not isolated pixels." text="Use the event stream to identify persistence, risk concentration and source mix."/><div className="analyticsGrid"><div className="chartCard"><div className="cardTitle"><div><span className="label">30-DAY SIGNAL HISTORY</span><h2>Thermal activity trend</h2></div><span className="trend"><Activity size={14}/> Live model view</span></div><div className="bigBars">{[32,44,38,58,46,67,53,76,62,83,71,91,68,78,88,74,95,81].map((v,i)=><i key={i} style={{height:`${v}%`}}><b/></i>)}</div><div className="axis"><span>−30d</span><span>−20d</span><span>−10d</span><span>Now</span></div></div><div className="mixCard"><span className="label">CLASSIFICATION MIX</span><h2>What are we seeing?</h2><div className="mixRows">{['Industrial Fire','Gas Flare','Crop Burning','Wildfire','Mining'].map(name=>{const count=events.filter(e=>e.cls===name).length;return <div key={name}><span>{name}</span><i><b style={{width:`${Math.max(8,count/events.length*100)}%`}}/></i><strong>{count}</strong></div>})}</div></div></div></section>
   <section id="history" className="section sectionBlock"><SectionHeading kicker="04 · HISTORICAL INTELLIGENCE" title="Persistence turns heat into context." text="Real NASA FIRMS observations for the selected source -- recurrence, baseline behaviour and change, not a synthetic trend."/><HistoricalIntelligence eventId={selected.id} latitude={selected.lat} longitude={selected.lon} brightnessK={selected.brightness}/></section>
@@ -96,10 +170,10 @@ export default function Home(){
 <button className="ghost full" onClick={()=>{const c=contactFor(selected.cls);const summary=`AgniDrishti Incident ${selected.id}\n${selected.cls} · ${selected.risk} risk\nLocation: ${selected.name} (${selected.lat.toFixed(3)}, ${selected.lon.toFixed(3)})\nConfidence: ${selected.confidence}% · Brightness: ${selected.brightness}K · Persistence: ${selected.persistence}%\nNearest industrial facility: ${selected.distance.toFixed(1)} km\nRecommended contact: ${c.authority} (${c.phone})`;navigator.clipboard?.writeText(summary).then(()=>setToast('Incident summary copied')).catch(()=>setToast('Could not copy — clipboard unavailable'))}}><ClipboardList size={14}/> Copy incident summary</button>
 
 </div></div></div></section>
-  <section className="section cta"><div><span className="eyebrow">SIMULATION LAB · SAFE DEMO MODE</span><h2>Want to see the intelligence pipeline move?</h2><p>Generate a new hotspot, run the classifier, update the map and push the result into the intelligence feed.</p></div><button className="primary" onClick={()=>setSim(true)}><Zap size={17}/> Launch simulation</button></section>
+  <section className="section cta"><div><span className="eyebrow">SIMULATION LAB · SAFE DEMO MODE</span><h2>How does the model handle a new anomaly?</h2><p>Pick an exact location and test hypothetical evidence with the trained model. Test points stay separate from live incidents and alerts.</p></div><button className="primary" onClick={()=>setSim(true)}><Zap size={17}/> Launch simulation</button></section>
   <footer><div><span className="brandmark small"><Flame size={15}/></span><b>AgniDrishti</b> · Team WINFINITY</div><span><i/> Pipeline operational · {source==='POSTGRES'?'LIVE DATABASE':'DEMO / SIMULATION'}</span><span>© 2026</span></footer>
   {toast&&<div className="toast"><Sparkles size={15}/><span>{toast}</span><button onClick={()=>setToast('')}>×</button></div>}
-  {sim&&<div className="modalBackdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setSim(false)}}><div className="modal"><button className="modalClose" onClick={()=>setSim(false)}>×</button><div className="modalIcon"><Zap size={18}/></div><span className="label">SIMULATION LAB</span><h2>Create a new thermal event</h2><p>This is a real application flow: the event is classified by the same classifier, receives feature contributions, appears on the map and is added to Recent Intelligence.</p><label>Scenario location<input value={simLocation} onChange={e=>setSimLocation(e.target.value)}/></label><label>Thermal intensity <b>{brightness} K</b><input type="range" min="280" max="380" value={brightness} onChange={e=>setBrightness(Number(e.target.value))}/></label><label>Historical persistence <b>{persistence}%</b><input type="range" min="0" max="100" value={persistence} onChange={e=>setPersistence(Number(e.target.value))}/></label><div className="flow"><span>HOTSPOT</span><ChevronRight/><span>CONTEXT</span><ChevronRight/><span>CLASSIFY</span><ChevronRight/><span>XAI</span></div><button className="primary full" onClick={simulate} disabled={analyzing}><Sparkles size={16}/> {analyzing?'Running pipeline…':'Run AI simulation'}</button></div></div>}
+  {sim&&<SimulationLab onClose={closeSimulation}/>}
  </main>;
 }
 function responseSteps(e:Event):string[]{if(e.risk==='CRITICAL')return[`Escalate immediately — ${e.cls} at ${e.name}`,`Confirm industrial distance: ${e.distance.toFixed(1)} km (${e.landCover||'unknown'} land cover)`,`Open satellite/context evidence for verification`,`Notify ground team — do not wait for further confirmation`];if(e.risk==='HIGH')return[`Review thermal evidence — ${e.confidence}% confidence, ${e.brightness} K`,`Inspect industrial proximity: ${e.distance.toFixed(1)} km · persistence ${e.persistence}%`,`Open satellite/context evidence for verification`,`Escalate after analyst confirmation`];return[`Review thermal evidence and confidence (${e.confidence}%)`,`Inspect industrial proximity (${e.distance.toFixed(1)} km) and historical pattern`,`Open satellite/context evidence for verification`,`Escalate only after analyst or ground verification`];}
