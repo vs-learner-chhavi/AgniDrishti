@@ -18,6 +18,10 @@ def run(payload):
     if not isinstance(payload, dict):
         raise ValueError('Expected a JSON object.')
     mode = payload.get('mode')
+    if mode == 'context':
+        lat, lon = coordinates(payload)
+        progress('Looking up infrastructure')
+        return {'ok': True, 'context': location_context(lat, lon)}
     if mode not in ('simulation', 'archive'):
         raise ValueError('mode must be simulation or archive.')
     lat, lon = coordinates(payload)

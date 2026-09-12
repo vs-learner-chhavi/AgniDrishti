@@ -37,6 +37,23 @@ if __name__ == '__main__':
                 time.sleep(.25)
         else:
             raise RuntimeError('Preview server did not start; run npm run build first.')
+        with urllib.request.urlopen(BASE) as response:
+            html = response.read().decode()
+        for label in ['Thermal density', 'Final 24h', 'Final 7 days', 'Final 30 days', 'Show demos', 'Browse visible detections']:
+            assert label in html, f'Missing monitor control: {label}'
+        status, context = post('/api/context', {'latitude': 22.35, 'longitude': 69.85})
+        assert status == 200 and context['ok'], context
+        assert 'prediction' not in context, 'Context lookup must not classify demo points'
+        assert any('Reliance' in f['name'] for f in context['context']['facilities'])
+        status, invalid_context = post('/api/context', {'latitude': 999, 'longitude': 0})
+        assert status == 400 and not invalid_context['ok']
+        snapshot = json.loads((ROOT / 'public/data/firms-recent.json').read_text())
+        point = max(snapshot['observations'], key=lambda x: (x['date'], x['frp']))
+        status, selected_archive = post('/api/analyze', {
+            'latitude': point['latitude'], 'longitude': point['longitude'],
+            'detectedAt': f"{point['date']}T{point['time'][:2]}:{point['time'][2:]}:00Z"})
+        assert status == 200, selected_archive
+        assert selected_archive['event']['persistence']['activeDays'] == selected_archive['analysis']['features']['active_days_30d']
         payload = dict(latitude=22.35, longitude=69.85, detectedAt='2026-09-10T00:00:00Z',
             brightness=330, bright_t31=300, frp=15, confidence_score=50, daynight='N',
             active_days_7d=2, active_days_30d=5, hotspot_count_7d=2, hotspot_count_30d=5,
@@ -62,6 +79,7 @@ if __name__ == '__main__':
         print(json.dumps({'passed': ['real prediction', '27 SHAP factors', 'actual nearby OSM site',
             'deterministic repeat', 'new exact coordinates', 'invalid history rejected',
             'missing timestamp rejected', 'exact archive replay', 'model confidence scale'],
+            'monitorChecks': ['controls render', 'context without classification', 'invalid coordinates rejected', 'map snapshot replay', 'persistence matches model evidence'],
             'examplePrediction': first['prediction'], 'exampleFacility': first['context']['facilities'][0]}, indent=2))
     finally:
         server.terminate()
