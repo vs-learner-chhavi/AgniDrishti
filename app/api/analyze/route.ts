@@ -1,54 +1,12 @@
-import {NextResponse} from 'next/server';
-import {fetchFirmsHotspots, type FirmsHotspot} from '@/lib/firms';
-import {findNearbyFacilities} from '@/lib/overpass';
-import {estimatePersistence} from '@/lib/persistence';
-import {classifyThermalEvent} from '@/lib/classifier';
-import {lookupWorldCover} from '@/lib/worldcover';
+import { NextResponse } from 'next/server';
+import { spawn } from 'node:child_process';
+import { fetchFirmsHotspots, type FirmsHotspot } from '@/lib/firms';
+import { findNearbyFacilities } from '@/lib/overpass';
+import { estimatePersistence } from '@/lib/persistence';
+import { lookupWorldCover } from '@/lib/worldcover';
 
-function demoHotspot(latitude:number, longitude:number, body:any):FirmsHotspot {
- const brightness=Math.min(380,Math.max(280,Number(body.brightnessKelvin)||348));
- const confidence=Math.min(100,Math.max(50,Number(body.firmsConfidence)||94));
- const now=new Date();
- const detected=body.detectedAt?new Date(body.detectedAt):now;
- return {latitude,longitude,brightness,confidence,acqDate:detected.toISOString().slice(0,10),acqTime:detected.toISOString().slice(11,16).replace(':',''),satellite:body.satellite||'SIMULATION',frp:Number(body.frp)||0};
-}
+function demoHotspot(latitude:number,longitude:number,body:any):FirmsHotspot{const brightness=Math.min(380,Math.max(280,Number(body.brightnessKelvin)||348));const confidence=Math.min(100,Math.max(50,Number(body.firmsConfidence)||94));const d=body.detectedAt?new Date(body.detectedAt):new Date();return {latitude,longitude,brightness,confidence,acqDate:d.toISOString().slice(0,10),acqTime:d.toISOString().slice(11,16).replace(':',''),satellite:body.satellite||'SIMULATION',frp:Number(body.frp)||0};}
 
-export async function POST(req:Request){
- try{
-  const body=await req.json().catch(()=>({}));
-  const latitude=Number(body.latitude),longitude=Number(body.longitude);
-  if(!Number.isFinite(latitude)||!Number.isFinite(longitude))return NextResponse.json({ok:false,error:'latitude and longitude are required'},{status:400});
-  const radius=Number(body.radiusMeters)||10000,isArchive=body.observationSource==='NASA_ARCHIVE';
-  let history:FirmsHotspot[]=[];
-  let current:FirmsHotspot|null=null;
-  let source:'NASA_FIRMS'|'NASA_ARCHIVE'|'DEMO_SIMULATION'=isArchive?'NASA_ARCHIVE':'NASA_FIRMS';
+function predict(features:Record<string,number>):Promise<any>{return new Promise((resolve,reject)=>{const python=process.env.PYTHON_BIN||'python';const child=spawn(python,['inference_bridge.py'],{cwd:'ml'});let out='',err='';child.stdout.on('data',d=>out+=d);child.stderr.on('data',d=>err+=d);child.on('error',reject);child.on('close',code=>{if(code!==0)return reject(new Error(err||`Python exited with ${code}`));try{const lines=out.trim().split(/\r?\n/).filter(Boolean);const value=JSON.parse(lines.at(-1)||'{}');if(value.error)return reject(new Error(value.error));resolve(value);}catch(e){reject(e);}});child.stdin.end(JSON.stringify(features)+'\n');});}
 
-  if(process.env.FIRMS_MAP_KEY){
-   try{
-    history=await fetchFirmsHotspots('IND',Number(body.days)||7);
-    current=history.filter(h=>Math.abs(h.latitude-latitude)<0.2&&Math.abs(h.longitude-longitude)<0.2).sort((a,b)=>b.brightness-a.brightness)[0]||null;
-   }catch{}
-  }
-
-  if(!current&&isArchive){current=demoHotspot(latitude,longitude,body);history=[];source='NASA_ARCHIVE';}
-  if(!current){
-   source='DEMO_SIMULATION';
-   current=demoHotspot(latitude,longitude,body);
-   history=Array.from({length:14},(_,i)=>({...current!,latitude:latitude+(Math.sin(i*1.7)*0.006),longitude:longitude+(Math.cos(i*1.3)*0.006),brightness:Math.max(285,current!.brightness-i*1.7+(i%3)*5),confidence:Math.max(65,current!.confidence-i%4)}));
-  }
-
-  let facilities:any[]=[],facilityLookupStatus:'complete'|'unavailable'='complete';
-  try{facilities=await findNearbyFacilities(current.latitude,current.longitude,radius);if(!facilities.length&&radius<25000)facilities=await findNearbyFacilities(current.latitude,current.longitude,25000);}catch{facilityLookupStatus='unavailable'}
-  const fallbackDistance=Number(body.industrialDistanceKm);
-  const nearest=facilities[0]?.distanceKm??(Number.isFinite(fallbackDistance)?fallbackDistance:source==='DEMO_SIMULATION'?0.8:99);
-  const persistence=isArchive
-   ? {score:Math.min(100,Math.max(0,Number(body.persistence)||0)),observations:Math.max(0,Number(body.persistenceObservations)||0),persistenceDays:Math.max(0,Number(body.persistenceDays)||0),windowDays:30}
-   : source==='DEMO_SIMULATION'
-   ? {score:Math.min(99,Math.max(8,Number(body.persistence)||82)),hotspotCount:history.length}
-   : estimatePersistence(current,history,Number(body.windowDays)||30);
-  const landCoverContext=body.landCover?{code:-1,label:String(body.landCover)}:await lookupWorldCover(current.latitude,current.longitude);
-  const landCover=landCoverContext.code===10?'forest':landCoverContext.code===40?'cropland':'unknown';
-  const result=classifyThermalEvent({brightnessKelvin:current.brightness,firmsConfidence:current.confidence,persistence:persistence.score,industrialDistanceKm:nearest,landCover});
-  return NextResponse.json({ok:true,event:{hotspot:current,persistence,nearestFacility:facilities[0]||null,facilities,facilityLookupStatus,landCoverContext,result,source,analysisMode:isArchive?'ARCHIVE CONTEXT ONLY':source==='NASA_FIRMS'?'LIVE MULTISOURCE':'DEMO MULTISOURCE'},generatedAt:new Date().toISOString()});
- }catch(error){return NextResponse.json({ok:false,error:error instanceof Error?error.message:'Analysis failed'},{status:500});}
-}
+export async function POST(req:Request){try{const body=await req.json().catch(()=>({}));const latitude=Number(body.latitude),longitude=Number(body.longitude);if(!Number.isFinite(latitude)||!Number.isFinite(longitude))return NextResponse.json({ok:false,error:'latitude and longitude are required'},{status:400});const radius=Number(body.radiusMeters)||10000;let history:FirmsHotspot[]=[],current:FirmsHotspot|null=null;let source:'NASA_FIRMS'|'NASA_ARCHIVE'|'DEMO_SIMULATION'=body.observationSource==='NASA_ARCHIVE'?'NASA_ARCHIVE':'NASA_FIRMS';if(process.env.FIRMS_MAP_KEY){try{history=await fetchFirmsHotspots('IND',Number(body.days)||7);current=history.filter(h=>Math.abs(h.latitude-latitude)<.2&&Math.abs(h.longitude-longitude)<.2).sort((a,b)=>b.brightness-a.brightness)[0]||null;}catch{}}if(!current){source='DEMO_SIMULATION';current=demoHotspot(latitude,longitude,body);history=Array.from({length:14},(_,i)=>({...current!,latitude:latitude+Math.sin(i*1.7)*.006,longitude:longitude+Math.cos(i*1.3)*.006,brightness:Math.max(285,current!.brightness-i*1.7+(i%3)*5),confidence:Math.max(65,current!.confidence-i%4)}));}let facilities:any[]=[];try{facilities=await findNearbyFacilities(current.latitude,current.longitude,radius);}catch{}const nearest=facilities[0]?.distanceKm??Number(body.industrialDistanceKm)||.8;const persistence=estimatePersistence(current,history,Number(body.windowDays)||30);const cover=body.landCover?{code:-1,label:String(body.landCover)}:await lookupWorldCover(current.latitude,current.longitude);const hour=Number(current.acqTime.slice(0,2))||12;const day=Math.floor((Date.parse(current.acqDate)-Date.parse(`${current.acqDate.slice(0,4)}-01-01`))/86400000)+1;const features={brightness:current.brightness,bright_t31:current.brightness-30,frp:current.frp,confidence_score:current.confidence/100,log_frp:Math.log1p(current.frp),thermal_excess:30,hour,month:Number(current.acqDate.slice(5,7)),day_of_year:day,is_night:hour<6||hour>=18?1:0,hotspot_count_7d:history.length,active_days_7d:history.length,hotspot_count_30d:history.length,active_days_30d:history.length,persistence_ratio_7d:1,persistence_ratio_30d:1,persistent_source_flag:persistence.score>50?1:0,high_persistence_flag:persistence.score>70?1:0,daily_total_frp:current.frp,daily_max_brightness:current.brightness,daily_mean_confidence:current.confidence/100,frp_per_detection_30d:current.frp/Math.max(1,history.length),persistence_score:persistence.score/100,night_fire_flag:hour<6||hour>=18?1:0,persistent_activity:persistence.score>50?1:0,high_frp_flag:current.frp>50?1:0,low_persistence_flag:persistence.score<20?1:0};let model;try{model=await predict(features);}catch(error){return NextResponse.json({ok:false,error:`Trained ML inference unavailable: ${error instanceof Error?error.message:String(error)}`},{status:503});}return NextResponse.json({ok:true,event:{hotspot:current,persistence,nearestFacility:facilities[0]||null,facilities,landCoverContext:cover,result:{fireType:model.fire_type,confidence:model.confidence,probabilities:model.probabilities,model:'trained fire-type classifier'},source,analysisMode:source==='NASA_FIRMS'?'LIVE MULTISOURCE':'DEMO MULTISOURCE'},generatedAt:new Date().toISOString()});}catch(error){return NextResponse.json({ok:false,error:error instanceof Error?error.message:'Analysis failed'},{status:500});}}
