@@ -147,3 +147,4 @@
 .restoredMonitor .classLegend .unclassified{background:#9bb4c6;color:#9bb4c6}
 
 .indiaStateLabel{background:transparent;border:0;text-align:center;color:#183e58;font-size:9px;font-weight:700;line-height:1.2;text-shadow:0 0 3px #fff,0 0 3px #fff;pointer-events:none}.indiaStateLabel span{white-space:normal}
+.sourceTag{margin-left:6px;font-size:6px;letter-spacing:.5px;padding:2px 5px;border-radius:4px;vertical-align:middle;font-style:normal}.sourceTag.live{color:#51d8ae;background:rgba(81,216,174,.12);border:1px solid rgba(81,216,174,.35)}.assetsNote{display:block;margin-top:8px;color:#5c7488;font-size:7px;line-height:1.6;font-style:italic}

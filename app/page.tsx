@@ -16,7 +16,7 @@ function elapsedLabel(ms:number){const m=Math.floor(ms/60000);if(m<1)return'just
 function nextStatus(s:'new'|'ack'|'resolved'):'new'|'ack'|'resolved'{return s==='new'?'ack':s==='ack'?'resolved':'new';}
 function statusLabel(s:'new'|'ack'|'resolved'){return s==='new'?'New':s==='ack'?'Acknowledged':'Resolved';}
 
-type Event={id:string;name:string;lat:number;lon:number;cls:string;confidence:number;risk:string;brightness:number;persistence:number;distance:number;time:string;source?:string;detectedAt?:string;landCover?:string;explanations?:Explanation[];facilities?:Facility[]};
+type Event={id:string;name:string;lat:number;lon:number;cls:string;confidence:number;risk:string;brightness:number;persistence:number;distance:number;time:string;source?:string;detectedAt?:string;landCover?:string;explanations?:Explanation[];facilities?:Facility[];facilitiesSource?:'OSM_SNAPSHOT'|'UNAVAILABLE';facilitiesNote?:string};
 const seed:Event[]=[
 {id:'TG-1042',name:'Historical recurring source · Jharkhand',lat:23.77591,lon:86.38096,cls:'Industrial Fire',confidence:91,risk:'CRITICAL',brightness:342,persistence:88,distance:.7,time:'14:32 IST',source:'DEMO',landCover:'industrial'},
 {id:'TG-1037',name:'Gas infrastructure · Rajasthan',lat:27.17,lon:73.21,cls:'Gas Flare',confidence:96,risk:'HIGH',brightness:329,persistence:97,distance:1.1,time:'13:58 IST',source:'DEMO',landCover:'industrial'},
@@ -65,22 +65,60 @@ export default function Home(){
     setAnalyzing(true);
 
     try {
-      const r = await fetch('/api/analyze', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          latitude: e.lat,
-          longitude: e.lon,
-          detectedAt: e.detectedAt,
+      // The classifier call and the real-facilities lookup are independent teammate-owned
+      // endpoints; running them together keeps the radar populated from actual OSM snapshot
+      // data (/api/context) instead of the separate live Overpass call inside /api/analyze.
+      const [r, contextRes] = await Promise.all([
+        fetch('/api/analyze', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            latitude: e.lat,
+            longitude: e.lon,
+            detectedAt: e.detectedAt,
+          }),
         }),
-      });
+        fetch('/api/context', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            latitude: e.lat,
+            longitude: e.lon,
+          }),
+        }).catch(() => null),
+      ]);
 
       const d = await r.json();
 
       if (!d.ok) {
         throw new Error(d.error);
+      }
+
+      let realFacilities: Facility[] = [];
+      let facilitiesSource: 'OSM_SNAPSHOT' | 'UNAVAILABLE' = 'UNAVAILABLE';
+      let facilitiesNote = '';
+
+      if (contextRes) {
+        try {
+          const c = await contextRes.json();
+          if (c.ok && c.context) {
+            realFacilities = (c.context.facilities || []).map(
+              (f: any) => ({
+                name: f.nameAvailable ? f.name : f.objectLabel,
+                type: f.type || 'industrial',
+                distanceKm: Number(f.distanceKm) || 0,
+                lat: Number(f.latitude) || 0,
+                lon: Number(f.longitude) || 0,
+              }),
+            );
+            facilitiesSource = 'OSM_SNAPSHOT';
+            facilitiesNote = c.context.note || '';
+          }
+        } catch {}
       }
 
       const h = d.event.hotspot;
@@ -110,15 +148,9 @@ export default function Home(){
 
         source: d.event.source,
 
-        facilities: (d.event.facilities || []).map(
-          (f: any) => ({
-            name: f.name || 'Unnamed facility',
-            type: f.type || 'industrial',
-            distanceKm: Number(f.distanceKm) || 0,
-            lat: Number(f.latitude) || 0,
-            lon: Number(f.longitude) || 0,
-          }),
-        ),
+        facilities: realFacilities,
+        facilitiesSource,
+        facilitiesNote,
       };
 
       setEvents((xs) =>
@@ -151,7 +183,7 @@ export default function Home(){
   <section id="intelligence" className="section sectionBlock"><SectionHeading kicker="02 · INTELLIGENCE" title="Evidence to action." text="Inspect the signals behind the selected event, compare likely sources, and refresh the decision only when you choose."/><div className="intelGrid"><div className="evidenceCard"><div className="cardTitle"><div><span className="label">LIVE EVIDENCE</span><h2>What supports this decision</h2></div><span className="pill moderate">VERIFIED INPUTS</span></div>{[["01","Thermal signal","Brightness, FIRMS confidence and radiative context",`${selected.brightness} K · ${selected.confidence}% FIRMS confidence`],["02","Spatial context","Industrial proximity and land-cover context",`${selected.distance.toFixed(1)} km to nearest facility · ${selected.landCover||'unknown'} land cover`],["03","Temporal history","Persistence and recurrence across the analysis window",`${selected.persistence}% persistence score · 30-day context`],["04","Satellite verification","Source imagery and observation provenance",`${selected.source||'DEMO'} observation · ${selected.time}`]].map(([n,t,d,v])=><details className="evidenceDetail" key={n}><summary className="evidenceRow"><b>{n}</b><div><strong>{t}</strong><span>{d}</span></div><ChevronRight size={15}/></summary><div className="evidenceValue"><span>{v}</span><i><b style={{width:`${n==='01'?Math.min(100,selected.confidence):n==='02'?Math.max(8,100-selected.distance*3):n==='03'?selected.persistence:75}%`}}/></i></div></details>)}</div><div className="decisionCard"><div className="cardTitle"><div><span className="label">DECISION WORKSPACE</span><h2>Why this source?</h2></div><span className={`pill ${riskClass(selected.risk)}`}>{selected.risk}</span></div><div className="decisionClass"><ClassIcon cls={selected.cls}/><div><small>LIKELY SOURCE</small><b>{selected.cls}</b><span className="decisionMeta">Event {selected.id} · {selected.time}</span></div><strong>{selected.confidence}%<small>confidence</small></strong></div><div className="confidenceList">{[selected.cls,'Gas Flare','Industrial Fire','Wildfire','Crop Burning'].filter((v,i,a)=>a.indexOf(v)===i).slice(0,5).map((label,i)=>{const score=i===0?selected.confidence:Math.max(1,Math.round((100-selected.confidence)/(i+1)));return <div key={label}><span>{label}</span><i><b style={{width:`${score}%`}}/></i><strong>{score}%</strong></div>})}</div><div className="riskMeter"><span>RISK EXPOSURE</span><i><b style={{width:`${selected.risk==='CRITICAL'?94:selected.risk==='HIGH'?76:selected.risk==='MODERATE'?52:28}%`}}/></i><em>{selected.risk}</em></div><p className="decisionNote">The score is tied to this event's stored evidence. Selecting another event changes the workspace; it does not recompute the model.</p><div className="decisionActions"><button className="ghost" onClick={()=>analyze(selected)} disabled={analyzing}><RefreshCw size={14}/>{analyzing?'Refreshing…':'Refresh analysis'}</button><button className="ghost" onClick={()=>setToast('Analysis is locked to the selected event until refresh is requested.')}> <ShieldCheck size={14}/>Lock decision</button></div></div></div></section>
     <Analytics />
   <section id="history" className="section sectionBlock"><SectionHeading kicker="04 · HISTORICAL INTELLIGENCE" title="Persistence turns heat into context." text="Real NASA FIRMS observations for the selected source -- recurrence, baseline behaviour and change, not a synthetic trend."/><HistoricalIntelligence eventId={selected.id} latitude={selected.lat} longitude={selected.lon} brightnessK={selected.brightness}/></section>
-  <section id="alerts" className="section sectionBlock"><SectionHeading kicker="05 · RISK & RESPONSE" title="Move from detection to action." text="Priority alerts are created from selected intelligence and remain visible as an analyst queue."/><div className="alertsGrid"><div className="alertQueue"><div className="cardTitle"><div><span className="label">PRIORITY QUEUE</span><h2>{alerts.filter(id=>alertMeta[id]?.status!=='resolved').length?`${alerts.filter(id=>alertMeta[id]?.status!=='resolved').length} active alert${alerts.filter(id=>alertMeta[id]?.status!=='resolved').length>1?'s':''}`:'No active alerts'}</h2></div><Bell size={17}/></div>{alerts.length?[...alerts].sort((a,b)=>{const sa=alertMeta[a]?.status||'new',sb=alertMeta[b]?.status||'new';if((sa==='resolved')!==(sb==='resolved'))return sa==='resolved'?1:-1;return(alertMeta[b]?.createdAt||0)-(alertMeta[a]?.createdAt||0)}).map(id=>{const e=events.find(x=>x.id===id)||selected;const meta=alertMeta[id]||{createdAt:Date.now(),status:'new' as const};const elapsed=now-meta.createdAt;const th=slaThresholds(e.risk);const urgency=meta.status==='resolved'?'ok':elapsed>=th.breach?'breach':elapsed>=th.warn?'warn':'ok';return <div className={`alertRow status-${meta.status} sla-${urgency}`} key={id}><button className="alertRowMain" onClick={()=>analyze(e)}><span className={`dot ${riskClass(e.risk)}`}/><div><b>{id}</b><small>{e.cls} · {e.name}</small><small className={`slaTag sla-${urgency}`}>{statusLabel(meta.status)} · {elapsedLabel(elapsed)}</small></div><span className={`pill ${riskClass(e.risk)}`}>{e.risk}</span></button><button className="statusCycle" onClick={(ev)=>{ev.stopPropagation();setAlertMeta(m=>({...m,[id]:{...meta,status:nextStatus(meta.status)}}))}} title="Advance status">{meta.status==='new'?<ChevronRight size={15}/>:meta.status==='ack'?<ShieldCheck size={15}/>:<RefreshCw size={13}/>}</button></div>}):<div className="emptyAlert"><Bell size={20}/><b>Alert queue is clear</b><span>Select an event and generate a priority alert.</span></div>}</div><div className="responseCard assetsCard"><span className="label">NEARBY ASSETS · IMPACT RADIUS</span><h2>{selected.name}</h2>
+  <section id="alerts" className="section sectionBlock"><SectionHeading kicker="05 · RISK & RESPONSE" title="Move from detection to action." text="Priority alerts are created from selected intelligence and remain visible as an analyst queue."/><div className="alertsGrid"><div className="alertQueue"><div className="cardTitle"><div><span className="label">PRIORITY QUEUE</span><h2>{alerts.filter(id=>alertMeta[id]?.status!=='resolved').length?`${alerts.filter(id=>alertMeta[id]?.status!=='resolved').length} active alert${alerts.filter(id=>alertMeta[id]?.status!=='resolved').length>1?'s':''}`:'No active alerts'}</h2></div><Bell size={17}/></div>{alerts.length?[...alerts].sort((a,b)=>{const sa=alertMeta[a]?.status||'new',sb=alertMeta[b]?.status||'new';if((sa==='resolved')!==(sb==='resolved'))return sa==='resolved'?1:-1;return(alertMeta[b]?.createdAt||0)-(alertMeta[a]?.createdAt||0)}).map(id=>{const e=events.find(x=>x.id===id)||selected;const meta=alertMeta[id]||{createdAt:Date.now(),status:'new' as const};const elapsed=now-meta.createdAt;const th=slaThresholds(e.risk);const urgency=meta.status==='resolved'?'ok':elapsed>=th.breach?'breach':elapsed>=th.warn?'warn':'ok';return <div className={`alertRow status-${meta.status} sla-${urgency}`} key={id}><button className="alertRowMain" onClick={()=>analyze(e)}><span className={`dot ${riskClass(e.risk)}`}/><div><b>{id}</b><small>{e.cls} · {e.name}</small><small className={`slaTag sla-${urgency}`}>{statusLabel(meta.status)} · {elapsedLabel(elapsed)}</small></div><span className={`pill ${riskClass(e.risk)}`}>{e.risk}</span></button><button className="statusCycle" onClick={(ev)=>{ev.stopPropagation();setAlertMeta(m=>({...m,[id]:{...meta,status:nextStatus(meta.status)}}))}} title="Advance status">{meta.status==='new'?<ChevronRight size={15}/>:meta.status==='ack'?<ShieldCheck size={15}/>:<RefreshCw size={13}/>}</button></div>}):<div className="emptyAlert"><Bell size={20}/><b>Alert queue is clear</b><span>Select an event and generate a priority alert.</span></div>}</div><div className="responseCard assetsCard"><span className="label">NEARBY ASSETS · IMPACT RADIUS {selected.facilitiesSource==='OSM_SNAPSHOT'&&<em className="sourceTag live">REAL OSM DATA</em>}</span><h2>{selected.name}</h2>
 <div className="radarWrap">
 <svg viewBox="0 0 200 200" className="radarSvg">
 <circle cx="100" cy="100" r="28" className="radarRing"/><circle cx="100" cy="100" r="58" className="radarRing"/><circle cx="100" cy="100" r="90" className="radarRing radarRingOuter"/>
@@ -163,7 +195,8 @@ export default function Home(){
 <span className="radarTag r1km">1km</span><span className="radarTag r5km">5km</span><span className="radarTag r10km">10km</span>
 {pickedFacility&&<div className="radarPopover"><button className="radarPopoverClose" onClick={()=>setPickedFacility(null)}>×</button><b>{pickedFacility.name}</b><span className="radarPopoverType">{pickedFacility.type}</span><div className="radarPopoverStats"><div><small>DISTANCE</small><strong>{pickedFacility.distanceKm.toFixed(2)} km</strong></div><div><small>BEARING</small><strong>{compassLabel(bearingDeg(selected.lat,selected.lon,pickedFacility.lat,pickedFacility.lon))} · {Math.round(bearingDeg(selected.lat,selected.lon,pickedFacility.lat,pickedFacility.lon))}°</strong></div></div></div>}
 </div>
-{selected.facilities&&selected.facilities.length?<div className="assetList">{selected.facilities.slice(0,5).map((f,i)=>{const cls=f.distanceKm<=1?'dotNear':f.distanceKm<=5?'dotMid':'dotFar';const active=pickedFacility?.name===f.name&&pickedFacility?.distanceKm===f.distanceKm;return <div key={i} className={`assetRow${active?' assetRowActive':''}`} onClick={()=>setPickedFacility(active?null:f)} style={{cursor:'pointer'}}><span className={`assetDot ${cls}`}/><div><b>{f.name}</b><small>{f.type}</small></div><strong>{f.distanceKm.toFixed(1)} km</strong></div>})}</div>:<div className="emptyAssets"><span>No assets mapped for this event yet.</span><button className="ghost" onClick={()=>analyze(selected)} disabled={analyzing}>{analyzing?'Scanning…':'Scan area'}</button></div>}
+{selected.facilities&&selected.facilities.length?<div className="assetList">{selected.facilities.slice(0,5).map((f,i)=>{const cls=f.distanceKm<=1?'dotNear':f.distanceKm<=5?'dotMid':'dotFar';const active=pickedFacility?.name===f.name&&pickedFacility?.distanceKm===f.distanceKm;return <div key={i} className={`assetRow${active?' assetRowActive':''}`} onClick={()=>setPickedFacility(active?null:f)} style={{cursor:'pointer'}}><span className={`assetDot ${cls}`}/><div><b>{f.name}</b><small>{f.type}</small></div><strong>{f.distanceKm.toFixed(1)} km</strong></div>})}</div>:<div className="emptyAssets"><span>{selected.facilitiesSource==='OSM_SNAPSHOT'?'No mapped industrial, gas or mining infrastructure within 10km (real OSM data — genuinely nothing nearby).':'No assets mapped for this event yet.'}</span><button className="ghost" onClick={()=>analyze(selected)} disabled={analyzing}>{analyzing?'Scanning…':'Scan area'}</button></div>}
+{selected.facilitiesSource==='OSM_SNAPSHOT'&&selected.facilitiesNote&&<small className="assetsNote">{selected.facilitiesNote}</small>}
 <div className={`escalationBox risk-${riskClass(selected.risk)}`}>
 <span className="label">ESCALATION DIRECTORY</span>
 <div className="escalationHead"><ClassIcon cls={selected.cls}/><div><b>{contactFor(selected.cls).authority}</b><small>{selected.cls}</small></div><a className="phoneChip" href={`tel:${contactFor(selected.cls).phone}`}><Phone size={12}/>{contactFor(selected.cls).phone}</a></div>
