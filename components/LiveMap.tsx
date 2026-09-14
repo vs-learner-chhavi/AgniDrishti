@@ -5,7 +5,7 @@ import {terrainTiles,terrainOptions,loadIndiaBoundaries,addIndiaBoundaries} from
 
 export type MapMode='detections'|'density';
 export type MapLayers={facilities:boolean;halos:boolean;labels:boolean;imagery:boolean};
-export type ThermalSignal={modelPrediction?:{fire_type?:string;confidence?:number;probabilities?:Record<string,number>;activeDays30d?:number;observations30d?:number;factors?:{feature:string;value:number;shap_value:number}[];error?:string};datasetLabel?:{fireType:string;quality:string;eventId:string;activeDays30d:number;observations30d:number};id:string;latitude:number;longitude:number;brightness:number;frp:number;date:string;time:string;confidence:number;satellite:string;persistenceDays:number;persistenceObservations:number;persistenceScore:number};
+export type ThermalSignal={modelPrediction?:{fire_type?:string;confidence?:number;probabilities?:Record<string,number>;activeDays30d?:number;observations30d?:number;explanationComplete?:boolean;factors?:{feature:string;value:number;shap_value:number}[];error?:string};datasetLabel?:{fireType:string;quality:string;eventId:string;activeDays30d:number;observations30d:number};id:string;latitude:number;longitude:number;brightness:number;frp:number;date:string;time:string;confidence:number;satellite:string;persistenceDays:number;persistenceObservations:number;persistenceScore:number};
 export type FacilityPoint={name:string;type:string;latitude:number;longitude:number;distanceKm:number};
 type MapEvent={id:string;latitude:number;longitude:number;risk:string;confidence:number;classification:string;brightness:number;persistence:number};
 
@@ -24,3 +24,4 @@ export default function LiveMap({events,densityEvents,facilities,selectedId,onSe
  },[events,densityEvents,facilities,selectedId,onSelect,mode,layers,mapReady]);
  return <div ref={host} className="liveMap" aria-label="Interactive thermal activity map">{mapError&&<p role="alert">{mapError}</p>}</div>;
 }
+

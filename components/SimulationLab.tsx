@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { FlaskConical, MapPin, Play, X, RotateCcw } from 'lucide-react';
 import ScenarioMap from './ScenarioMap';
+import ClassificationEvidence from './ClassificationEvidence';
 
 const labels: Record<string, string> = { industrial_fire: 'Industrial Fire', gas_flare: 'Gas Flare',
   agricultural_burning: 'Crop Burning', wildfire: 'Wildfire', mining_thermal_source: 'Mining thermal source' };
@@ -11,15 +12,6 @@ type Result = { id: string; mode: string; observation: { latitude: number; longi
   features: Record<string, number>; explanation: { all_contributions: Factor[] };
   context: { facilities: { name: string; type: string; distanceKm: number; objectLabel?: string; osmUrl?: string; nameAvailable?: boolean }[]; unavailable: string[]; source: string };
   provenance: { modelSha256: string; highFrpThreshold: number; historyWindow: string } };
-const names: Record<string, string> = {
-  brightness: 'Hotspot temperature', bright_t31: 'Secondary-band temperature', frp: 'Fire radiative power',
-  confidence_score: 'Satellite detection confidence', active_days_7d: 'Active days in the previous week',
-  active_days_30d: 'Active days in the previous month', hotspot_count_7d: 'Detections in the previous week',
-  hotspot_count_30d: 'Detections in the previous month', persistence_score: 'Combined persistence score',
-  thermal_excess: 'Temperature above 300 K', log_frp: 'Logarithm of fire radiative power',
-  is_night: 'Night observation', night_fire_flag: 'Night observation', high_frp_flag: 'High radiative power',
-  persistent_activity: 'Repeated activity', low_persistence_flag: 'Infrequent activity',
-};
 function probability(value: number) {
   return value > 0 && value < .001 ? '<0.1%' : `${(value * 100).toFixed(1)}%`;
 }
@@ -30,24 +22,6 @@ function contextMessage(result: Result) {
   if (result.context.facilities.some(f => f.type === category)) return `Mapped ${category}-category features nearby. These are supporting context, not verification of the predicted thermal source.`;
   return `Location context does not corroborate this prediction: no mapped ${category}-category features were found within 10 km in the available snapshot. This does not rule them out.`;
 }
-function describe(f: Factor) {
-  const flags: Record<string, [string, string]> = {
-    persistent_activity: ['Below the frequent-activity threshold', 'Frequent-activity threshold reached'],
-    persistent_source_flag: ['Below the persistent-source threshold', 'Persistent-source threshold reached'],
-    high_persistence_flag: ['Below the high-persistence threshold', 'High-persistence threshold reached'],
-    low_persistence_flag: ['More than 2 active days in the previous 30 days', 'At most 2 active days in the previous 30 days'],
-    high_frp_flag: ['Radiative power below the training cutoff', 'Radiative power meets the training cutoff'],
-    is_night: ['Daytime observation', 'Nighttime observation'],
-    night_fire_flag: ['Daytime observation', 'Nighttime observation'],
-  };
-  if (flags[f.feature]) return flags[f.feature][f.value === 1 ? 1 : 0];
-  if (f.feature === 'active_days_30d') return `Activity on ${f.value} of the previous 30 days`;
-  if (f.feature === 'active_days_7d') return `Activity on ${f.value} of the previous 7 days`;
-  if (f.feature === 'brightness') return `A hotspot temperature of ${f.value.toFixed(1)} K`;
-  if (f.feature === 'frp') return `${f.value.toFixed(1)} MW of fire radiative power`;
-  return `${names[f.feature] || f.feature.replaceAll('_', ' ').replace(/^./, c => c.toUpperCase())}: ${Number(f.value.toFixed(3))}`;
-}
-
 export default function SimulationLab({ onClose }: { onClose: () => void }) {
   const [lat, setLat] = useState('');
   const [lon, setLon] = useState('');
@@ -156,7 +130,8 @@ export default function SimulationLab({ onClose }: { onClose: () => void }) {
             <p className="scenarioHelp">This model uses thermal and historical evidence only. Moving the point alone will not change its prediction. Model probability is not a verified chance of a fire at this location.</p>
             <div className="scenarioProbabilities">{Object.entries(latest.prediction.probabilities).sort((a,b)=>b[1]-a[1]).map(([key,value])=><div key={key}><span>{labels[key] || key}</span><meter min={0} max={1} value={value} /><b>{probability(value)}</b></div>)}</div>
             <h4>Why this classification?</h4>
-            <ul className="scenarioReasons">{latest.explanation.all_contributions.slice(0,3).map(f=><li key={f.feature}><b>{describe(f)}</b><span>{f.feature === 'persistent_activity' && <>Activity: {latest.features.active_days_7d}/7 days and {latest.features.active_days_30d}/30 days. The flag requires at least 3/7 or 10/30 days. </>}{f.shap_value > 0 ? 'Increases' : 'Decreases'} the model’s score for this class; this is a learned association.</span></li>)}</ul>
+            <ClassificationEvidence classification={latest.prediction.fire_type} confidence={latest.prediction.confidence}
+              probabilities={latest.prediction.probabilities} factors={latest.explanation.all_contributions} complete />
             <h4>Nearby infrastructure</h4><p className="scenarioHelp">OSM snapshot · Within 10 km · Mapped features, not detected fires. Distances are to representative map points, not site boundaries. Several mapped areas may belong to one operation.</p>
             {latest.context.unavailable.length > 0 && <p className="scenarioNotice">Missing snapshots: {latest.context.unavailable.join(', ')}. Download them with git lfs pull.</p>}
             {latest.context.facilities.length ? <ul className="scenarioFacilities">{latest.context.facilities.slice(0,5).map((f,i)=><li key={i}><span>{f.objectLabel || f.name}<small>{f.nameAvailable === false ? "Name unavailable in OSM · " : ""}{f.type}</small>{f.osmUrl && <a href={f.osmUrl} target="_blank" rel="noopener noreferrer">View OSM record ↗</a>}</span><b>{f.distanceKm.toFixed(2)} km</b></li>)}</ul> : <p className="scenarioHelp">No sites found in the available snapshots within 10 km. This does not establish that no industry exists here.</p>}
@@ -172,3 +147,4 @@ export default function SimulationLab({ onClose }: { onClose: () => void }) {
     </div>
   </div>;
 }
+

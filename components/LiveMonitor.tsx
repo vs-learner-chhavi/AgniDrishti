@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Bell, Building2, Clock3, Gauge, Activity, ChevronDown, Flame, Layers3, MapPin, RefreshCw, Satellite, Search, ShieldCheck, Sparkles, Target } from 'lucide-react';
+import ClassificationEvidence from './ClassificationEvidence';
+import { factorText, type Factor } from '@/lib/classification-evidence';
 import LiveMap, { type MapLayers, type MapMode, type ThermalSignal, type FacilityPoint } from './LiveMap';
 
-type Factor = { feature: string; value?: number; shap_value?: number; contribution?: number };
 export type MonitorEvent = {
   id: string; name: string; lat: number; lon: number; cls: string; confidence: number;
   risk: string; brightness: number; persistence: number; distance: number; time: string;
@@ -15,7 +16,7 @@ export type MonitorEvent = {
   explanations?: { feature: string; contribution: number }[];
 };
 type Context = { facilities: FacilityPoint[]; unavailable: string[] };
-type Analysis = { features: Record<string, number>; explanation: { all_contributions: Factor[] } };
+type Analysis = { features: Record<string, number>; prediction?: { fire_type: string; confidence: number; probabilities: Record<string, number> }; explanation: { all_contributions: Factor[]; complete?: boolean } };
 const layersInitial: MapLayers = { facilities: true, imagery: false, labels: true, halos: true };
 const originalDemos: MonitorEvent[]=[
 {id:'TG-1042',name:'Industrial cluster · Gujarat',lat:22.31,lon:72.61,cls:'Industrial Fire',confidence:91,risk:'CRITICAL',brightness:342,persistence:88,persistenceDays:18,persistenceObservations:42,persistenceWindow:30,distance:.7,time:'14:32 IST',source:'DEMO',landCover:'industrial'},
@@ -34,48 +35,6 @@ function fromSignal(s: ThermalSignal): MonitorEvent {
     persistenceObservations: s.modelPrediction?.observations30d ?? s.datasetLabel?.observations30d ?? s.persistenceObservations, distance: 99, time: `${s.time.slice(0, 2)}:${s.time.slice(2)} UTC`,
     detectedAt: `${s.date}T${s.time.slice(0, 2)}:${s.time.slice(2)}:00Z`, source: 'NASA_ARCHIVE',
     frp: s.frp, firmsConfidence: s.confidence, landCover: 'unknown' };
-}
-function factorText(f: Factor): string {
-  const value = f.value;
-  if (value === undefined || !Number.isFinite(value)) return `${f.feature.replaceAll('_', ' ')}: value unavailable`;
-  const n = Number(value.toFixed(2));
-  const flags: Record<string, [string, string]> = {
-    persistent_activity: ['Activity recorded on fewer than 3 of 7 days and fewer than 10 of 30 days', 'Activity recorded on at least 3 of 7 days or 10 of 30 days'],
-    persistent_source_flag: ['Fewer than 5 active days and 10 detections in 30 days', 'At least 5 active days or 10 detections in 30 days'],
-    high_persistence_flag: ['Fewer than 10 active days and 25 detections in 30 days', 'At least 10 active days or 25 detections in 30 days'],
-    low_persistence_flag: ['Activity recorded on more than 2 of 30 days', 'Activity recorded on no more than 2 of 30 days'],
-    high_frp_flag: ['Radiative power is below the model’s high-power cutoff', 'Radiative power reaches the model’s high-power cutoff'],
-    is_night: ['Satellite passed during daytime', 'Satellite passed at night'],
-    night_fire_flag: ['Satellite passed during daytime', 'Satellite passed at night'],
-  };
-  if (flags[f.feature] && (value === 0 || value === 1)) return flags[f.feature][value];
-  if (/^active_days_(7|30)d$/.test(f.feature)) return `Detected on ${n} of the previous ${f.feature.includes('30') ? 30 : 7} days`;
-  if (/^hotspot_count_(7|30)d$/.test(f.feature)) return `${n} detections in the previous ${f.feature.includes('30') ? 30 : 7} days`;
-  const labels: Record<string, string> = {
-    brightness: `Satellite brightness temperature: ${n} K`,
-    bright_t31: `Secondary-band brightness temperature: ${n} K`,
-    frp: `Radiative power: ${n} MW`,
-    daily_total_frp: `Daily total radiative power: ${n} MW`,
-    daily_max_brightness: `Daily peak brightness temperature: ${n} K`,
-    daily_mean_confidence: `Daily mean detection confidence: ${n}%`,
-    confidence_score: `Satellite detection confidence: ${n}%`,
-    thermal_excess: `Brightness temperature is ${Math.abs(n)} K ${value < 0 ? 'below' : 'above'} the 300 K reference`,
-    frp_per_detection_30d: `Radiative power per historical detection: ${n} MW`,
-    persistence_ratio_7d: `Activity recorded on ${Number((value * 100).toFixed(1))}% of the previous 7 days`,
-    persistence_ratio_30d: `Activity recorded on ${Number((value * 100).toFixed(1))}% of the previous 30 days`,
-    persistence_score: `Combined recurrence indicator: ${n}`,
-    log_frp: `Radiative power on the model’s logarithmic scale: ${n}`,
-    hour: `Observation hour: ${n}:00 UTC`,
-    month: `Observation month: ${n}`,
-    day_of_year: `Observation falls on day ${n} of the year`,
-  };
-  return labels[f.feature] ?? `${f.feature.replaceAll('_', ' ').replace(/^./, c => c.toUpperCase())}: ${n}`;
-}
-function factorImpact(f: Factor, classification: string): string {
-  const score = f.shap_value ?? f.contribution;
-  if (score === undefined || !Number.isFinite(score)) return 'Model contribution unavailable.';
-  if (score === 0) return 'No effect on this prediction.';
-  return score > 0 ? `Supports the ${classification} prediction.` : `Weighs against the ${classification} prediction.`;
 }
 
 export default function LiveMonitor({ demoEvents, onReview, onAlert, queuedIds }: { demoEvents: MonitorEvent[]; onReview: (event: MonitorEvent) => void; onAlert: (event: MonitorEvent) => void; queuedIds: string[] }) {
@@ -97,13 +56,16 @@ export default function LiveMonitor({ demoEvents, onReview, onAlert, queuedIds }
   const [contexts, setContexts] = useState<Record<string, Context>>({});
   const [contextLoading, setContextLoading] = useState('');
   const [analyses, setAnalyses] = useState<Record<string, Analysis>>({});
-  const [analyzing, setAnalyzing] = useState(false);
+  const [analyzingId, setAnalyzingId] = useState('');
+  const [explanationErrors, setExplanationErrors] = useState<Record<string, string>>({});
   const [technical, setTechnical] = useState(false);
   const analysisController = useRef<AbortController | null>(null);
   const refreshController = useRef<AbortController | null>(null);
   const demos = useMemo(() => originalDemos.map(e => ({ ...e, source: 'DEMO', persistenceDays: demoDays[e.id] ?? e.persistenceDays, persistenceWindow: 30 })), [demoEvents]);
   const refresh = useCallback(async () => {
     refreshController.current?.abort();
+    analysisController.current?.abort();
+    setAnalyzingId(''); setAnalyses({}); setExplanationErrors({});
     const controller = new AbortController(); refreshController.current = controller;
     setLoading(true); setError('');
     try {
@@ -159,7 +121,8 @@ export default function LiveMonitor({ demoEvents, onReview, onAlert, queuedIds }
     return () => controller.abort();
   }, [id, selectedLat, selectedLon, contexts]);
   const context = contexts[id] || emptyContext;
-  const analysis = analyses[id] || (selected.modelPrediction?.factors ? {features:{active_days_30d:selected.modelPrediction.activeDays30d??0},explanation:{all_contributions:selected.modelPrediction.factors}} : undefined);
+  const analyzing = analyzingId === id;
+  const analysis: Analysis | undefined = analyses[id] || (selected.modelPrediction?.factors ? {features:{active_days_30d:selected.modelPrediction.activeDays30d??0},explanation:{all_contributions:selected.modelPrediction.factors,complete:selected.modelPrediction.explanationComplete === true}} : undefined);
   const days = analysis?.features.active_days_30d ?? selected?.persistenceDays;
   const isDemo = selected?.source === 'DEMO';
   const hasDatasetClass = !!datasetClasses[selected.datasetLabel?.fireType || ''];
@@ -168,35 +131,27 @@ export default function LiveMonitor({ demoEvents, onReview, onAlert, queuedIds }
   async function analyze() {
     if (!selected || isDemo) return;
     const event = selected;
-    analysisController.current?.abort(); const controller = new AbortController(); analysisController.current = controller;
-    setAnalyzing(true); setError('');
+    analysisController.current?.abort();
+    const controller = new AbortController(); analysisController.current = controller;
+    setAnalyzingId(event.id);
+    setExplanationErrors(previous => ({ ...previous, [event.id]: '' }));
     try {
-      const r = await fetch('/api/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ latitude: event.lat, longitude: event.lon, detectedAt: event.detectedAt }), signal: controller.signal });
-      const raw = await r.text();
-      const data = JSON.parse(raw);
-      let predictions: Record<string, ThermalSignal['modelPrediction']> = {};
-      try {
-        const response=await fetch('/data/firms-predictions.json',{cache:'no-store',signal:controller.signal});
-        if(!response.ok) throw new Error('Saved predictions unavailable; observations remain unclassified.');
-        const cache=await response.json();
-        const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(raw));
-        const sha=Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('');
-        if(cache.archiveSha!==sha) throw new Error('Saved predictions do not match this archive. Regenerate predictions.');
-        predictions=cache.results;setModelSha(cache.modelSha);
-      } catch(e) { if(controller.signal.aborted) throw e; setModelSha('');setError(e instanceof Error?e.message:'Predictions unavailable'); }
- if (!r.ok || !data.ok) throw new Error(data.error || 'Analysis unavailable.');
-      const result = data.event.result;
-      const updated: MonitorEvent = { ...event, cls: result.classification, confidence: result.confidence, risk: result.risk,
-        firmsConfidence: data.event.hotspot.confidence, persistence: data.event.persistence.score, persistenceDays: data.event.persistence.activeDays,
-        distance: data.event.industrialDistanceKm ?? 99,
-        explanations: result.explanations.map((f: Factor) => ({ feature: f.feature, contribution: f.shap_value ?? f.contribution ?? 0 })),
-        facilities: data.event.facilities.map((f: FacilityPoint) => ({ name: f.name, type: f.type, distanceKm: f.distanceKm, lat: f.latitude, lon: f.longitude })) };
-      setUpdates(previous => ({ ...previous, [event.id]: updated }));
-      setAnalyses(previous => ({ ...previous, [event.id]: data.analysis }));
-      setContexts(previous => ({ ...previous, [event.id]: data.analysis.context }));
-    } catch (e) { if (!controller.signal.aborted) setError(e instanceof Error ? e.message : 'Analysis unavailable.'); }
-    finally { if (!controller.signal.aborted) setAnalyzing(false); }
+      const response = await fetch('/api/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ latitude: event.lat, longitude: event.lon, detectedAt: event.detectedAt, observationSource: 'NASA_ARCHIVE' }), signal: controller.signal });
+      const data = await response.json();
+      if (!response.ok || !data.ok || !data.analysis) throw new Error(data.error || 'Full explanation unavailable.');
+      const fresh = data.analysis;
+      // Never attach an explanation from a different model/result to this cached label.
+      if (fresh.provenance?.modelSha256 !== modelSha || fresh.prediction?.fire_type !== event.modelPrediction?.fire_type ||
+          Math.abs(fresh.prediction.confidence - event.confidence / 100) > .00001) {
+        throw new Error('The model has changed since this saved prediction. Regenerate the saved predictions to show matching evidence.');
+      }
+      setAnalyses(previous => ({ ...previous, [event.id]: { ...fresh, explanation: { ...fresh.explanation, complete: true } } }));
+    } catch (error) {
+      if (!controller.signal.aborted) setExplanationErrors(previous => ({ ...previous, [event.id]: error instanceof Error ? error.message : 'Full explanation unavailable.' }));
+    } finally {
+      if (!controller.signal.aborted) setAnalyzingId('');
+    }
   }
   return <section id="monitor" className="section sectionBlock restoredMonitor">
    <SectionHeading kicker="01 · LIVE MONITOR" title="See the heat. Follow the signal." text="Move from national thermal activity to one explainable, actionable event." action={<button className="ghost" onClick={refresh} disabled={loading}><RefreshCw size={14}/> {loading?'Syncing':'Refresh data'}</button>}/>
@@ -227,7 +182,10 @@ export default function LiveMonitor({ demoEvents, onReview, onAlert, queuedIds }
       <Signal icon={<ShieldCheck/>} label="FIRMS confidence" value={selected.firmsConfidence===undefined?'Unavailable':`${selected.firmsConfidence}%`} note="Detection quality"/>
       <Signal icon={<Gauge/>} label="Radiative power" value={selected.frp?`${selected.frp.toFixed(1)} MW`:'Unavailable'} note="NASA FIRMS FRP"/>
      </div>
-     <div className="evidenceSummary"><div className="xaiHead"><span><Sparkles size={14}/> {hasClassification?'WHY THIS CLASSIFICATION?':'MODEL-READY EVIDENCE'}</span><b>{analyzing?'ENRICHING':'EVIDENCE'}</b></div>{analysis && <p style={{fontSize:8,color:'#9db2c2',lineHeight:1.5,margin:'7px 0'}}>The strongest influences on this prediction. Some support it; others weigh against it.</p>}{analysis ? [...analysis.explanation.all_contributions].sort((a,b)=>Math.abs(b.shap_value ?? b.contribution ?? 0)-Math.abs(a.shap_value ?? a.contribution ?? 0)).slice(0,3).map(f=><div className="reasonRow" key={f.feature}><i>{(f.shap_value ?? f.contribution ?? 0)>0?'+':(f.shap_value ?? f.contribution ?? 0)<0?'−':'·'}</i><span><b style={{display:'block',fontWeight:600,color:'#d4e4ee',lineHeight:1.5}}>{factorText(f)}</b><span style={{display:'block',marginTop:3,lineHeight:1.5}}>{factorImpact(f, selected.cls)}</span></span></div>) : <><div className="reasonRow"><i>1</i><span>{context.facilities[0]?.name?`Located ${(context.facilities[0]?.distanceKm ?? 99).toFixed(1)} km from ${context.facilities[0]?.name}`:selected.landCover&&selected.landCover!=='unknown'?`${(selected.landCover ? selected.landCover.charAt(0).toUpperCase()+selected.landCover.slice(1) : 'Unknown')} land context surrounds this detection`:'No mapped industrial facility has been confirmed nearby'}</span></div><div className="reasonRow"><i>2</i><span>Thermal signal reached {selected.brightness} K — {selected.brightness>=335?'very high':'elevated'} intensity</span></div><div className="reasonRow"><i>3</i><span>Detected on {(days ?? 0)} of the past {selected.persistenceWindow||30} days — {(days ?? 0)>=10?'a persistent pattern':'an intermittent pattern'}</span></div></>}<button className="technicalToggle" onClick={()=>setTechnical(v=>!v)}>View technical evidence <ChevronDown size={13} className={technical?'open':''}/></button>{technical&&<div className="technicalEvidence">{!isDemo&&<p style={{fontSize:9,lineHeight:1.6}}>Reference dataset label: {datasetClasses[selected.datasetLabel?.fireType||'']||'Unknown'}. {hasDatasetClass&&hasClassification?(datasetClasses[selected.datasetLabel!.fireType]===selected.cls?'Agrees with model.':'Disagrees with model.') : ''}<br/>Model: {modelSha.slice(0,16)||'Unavailable'}<br/>Top three SHAP score contributions, not percentages. Archive replay; training membership unverified.</p>}{analysis ? analysis.explanation.all_contributions.map((f,i)=><div className="xaiRow" key={i}><span>{factorText(f)}</span><i><b style={{width:`${Math.min(100,Math.abs(f.shap_value||0)*20)}%`}}/></i><strong>{f.shap_value?.toFixed(2)}</strong></div>) : <><div className="reasonRow"><span>FRP</span><strong>{selected.frp?.toFixed(1)||'—'} MW</strong></div><div className="reasonRow"><span>FIRMS detection confidence</span><strong>{selected.firmsConfidence??'—'}%</strong></div><div className="reasonRow"><span>Persistence</span><strong>{days ?? '—'} of 30 days</strong></div><small>{isDemo?'Fixed demo evidence; no model-generated SHAP values.':selected.datasetLabel?`Saved label: ${selected.datasetLabel.fireType}. Rule-label quality: ${selected.datasetLabel.quality} (not model probability). Source: fire_type_dataset.parquet. Record: ${selected.datasetLabel.eventId}.`:'No unique dataset match; no label assigned.'}</small></>}</div>}{!hasClassification&&<small>Inputs are prepared for the classification model; no class is inferred here.</small>}</div>
+     <div className="evidenceSummary"><div className="xaiHead"><span><Sparkles size={14}/> {hasClassification?'WHY THIS CLASSIFICATION?':'MODEL-READY EVIDENCE'}</span><b>{analyzing?'ENRICHING':'EVIDENCE'}</b></div>{!isDemo && hasClassification ? <ClassificationEvidence classification={selected.modelPrediction?.fire_type || selected.cls}
+       confidence={selected.confidence / 100} factors={analysis?.explanation.all_contributions || []}
+       probabilities={analysis?.prediction?.probabilities || selected.modelPrediction?.probabilities}
+       complete={analysis?.explanation.complete === true} compact /> : <><div className="reasonRow"><i>1</i><span>{context.facilities[0]?.name?`Located ${(context.facilities[0]?.distanceKm ?? 99).toFixed(1)} km from ${context.facilities[0]?.name}`:selected.landCover&&selected.landCover!=='unknown'?`${(selected.landCover ? selected.landCover.charAt(0).toUpperCase()+selected.landCover.slice(1) : 'Unknown')} land context surrounds this detection`:'No mapped industrial facility has been confirmed nearby'}</span></div><div className="reasonRow"><i>2</i><span>Thermal signal reached {selected.brightness} K — {selected.brightness>=335?'very high':'elevated'} intensity</span></div><div className="reasonRow"><i>3</i><span>Detected on {(days ?? 0)} of the past {selected.persistenceWindow||30} days — {(days ?? 0)>=10?'a persistent pattern':'an intermittent pattern'}</span></div></>}{!isDemo && hasClassification && analysis?.explanation.complete !== true && <button className="technicalToggle" onClick={analyze} disabled={analyzing}>{analyzing ? 'Loading full explanation…' : 'Load full explanation'}</button>}{explanationErrors[id] && <p style={{fontSize:10,lineHeight:1.5,color:'#efb19d'}} role="alert">{explanationErrors[id]}</p>}<button className="technicalToggle" onClick={()=>setTechnical(v=>!v)}>View technical evidence <ChevronDown size={13} className={technical?'open':''}/></button>{technical&&<div className="technicalEvidence">{!isDemo&&<p style={{fontSize:9,lineHeight:1.6}}>Reference dataset label: {datasetClasses[selected.datasetLabel?.fireType||'']||'Unknown'}. {hasDatasetClass&&hasClassification?(datasetClasses[selected.datasetLabel!.fireType]===selected.cls?'Agrees with model.':'Disagrees with model.') : ''}<br/>Model: {modelSha.slice(0,16)||'Unavailable'}<br/>{analysis?.explanation.complete ? 'All' : 'Saved'} SHAP score contributions, not percentages. Archive replay; training membership unverified.</p>}{analysis ? analysis.explanation.all_contributions.map((f,i)=><div className="xaiRow" key={i}><span>{factorText(f)}</span><i><b style={{width:`${Math.min(100,Math.abs(f.shap_value||0)*20)}%`}}/></i><strong>{f.shap_value?.toFixed(2)}</strong></div>) : <><div className="reasonRow"><span>FRP</span><strong>{selected.frp?.toFixed(1)||'—'} MW</strong></div><div className="reasonRow"><span>FIRMS detection confidence</span><strong>{selected.firmsConfidence??'—'}%</strong></div><div className="reasonRow"><span>Persistence</span><strong>{days ?? '—'} of 30 days</strong></div><small>{isDemo?'Fixed demo evidence; no model-generated SHAP values.':selected.datasetLabel?`Saved label: ${selected.datasetLabel.fireType}. Rule-label quality: ${selected.datasetLabel.quality} (not model probability). Source: fire_type_dataset.parquet. Record: ${selected.datasetLabel.eventId}.`:'No unique dataset match; no label assigned.'}</small></>}</div>}{!hasClassification&&<small>Inputs are prepared for the classification model; no class is inferred here.</small>}</div>
      <div className="provenance"><Clock3 size={14}/><div><b>{selected.time} · {isDemo?'DEMO':'VIIRS'}</b><span>{isDemo?'Illustrative demo scenario':selected.datasetLabel?'NASA FIRMS · Model archive replay · History excludes observation day':'NASA FIRMS archive · Snapshot recurrence'}</span></div></div>
      <div className="recommendation"><span>VERIFICATION REQUIRED</span><p>Satellite basemap is visual context, not proof of a current incident. Check dated imagery or ground reports before escalation.</p></div>
      <div className="panelActions"><button className="ghost" onClick={()=>{setMode('detections');setLayers(v=>({...v,imagery:!v.imagery}))}}><Satellite size={14}/>{layers.imagery?'Return to terrain map':'Inspect satellite view'}</button><button className={queuedIds.includes(id)?'alertCreated primary':'primary'} onClick={()=>onAlert(selected)} disabled={queuedIds.includes(id)}><Bell size={15}/> {queuedIds.includes(id)?'Alert queued':'Create alert'}</button></div>
@@ -238,3 +196,4 @@ export default function LiveMonitor({ demoEvents, onReview, onAlert, queuedIds }
 }
 function SectionHeading({kicker,title,text,action}:{kicker:string;title:string;text:string;action?:ReactNode}){return <div className="sectionHeading"><div><span className="eyebrow">{kicker}</span><h2>{title}</h2><p>{text}</p></div>{action}</div>}
 function Signal({icon,label,value,note}:{icon:ReactNode;label:string;value:string;note:string}){return <div className="signal"><span className="signalIcon">{icon}</span><div><small>{label}</small><b>{value}</b><em>{note}</em></div></div>}
+

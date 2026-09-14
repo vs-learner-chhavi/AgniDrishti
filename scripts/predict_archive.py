@@ -31,9 +31,10 @@ classes=list(predictor.label_encoder.classes_)
 for i,(point,prediction) in enumerate(zip(points,predictions)):
     values=shap[i,classes.index(prediction['fire_type'])]
     factors=sorted([{'feature':k,'value':float(X.iloc[i][k]),'shap_value':round(float(values[j]),6)} for j,k in enumerate(predictor.feature_names)],key=lambda x:abs(x['shap_value']),reverse=True)
-    results[point['id']]={**prediction,'activeDays30d':int(X.iloc[i].active_days_30d),'observations30d':int(X.iloc[i].hotspot_count_30d),'factors':factors[:3]}
+    results[point['id']]={**prediction,'activeDays30d':int(X.iloc[i].active_days_30d),'observations30d':int(X.iloc[i].hotspot_count_30d),'factors':factors,'explanationComplete':True}
 model_sha=hashlib.sha256((ROOT/'ml/models/fire_type_classifier_final.pkl').read_bytes()).hexdigest()
 assert model_sha==CONTRACT['model_sha256'], 'Model differs from feature contract'
 output={'modelSha':model_sha,'archiveSha':hashlib.sha256((ROOT/'public/data/firms-recent.json').read_bytes()).hexdigest(),'evaluation':'Archive replay; training split membership unverified. Not held-out accuracy.','results':results}
 (ROOT/'public/data/firms-predictions.json').write_text(json.dumps(output,separators=(',',':'),allow_nan=False))
 print(Counter(x.get('fire_type','unavailable') for x in results.values()),flush=True)
+

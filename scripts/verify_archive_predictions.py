@@ -18,9 +18,16 @@ for p in snapshot['observations']:
  actual=predict_fire_type(f)
  assert actual['fire_type']==r['fire_type']
  assert abs(actual['confidence']-r['confidence'])<1e-6
- expected=explain_fire_type(f)['all_contributions'][:3]
- for a,b in zip(expected,r['factors']):
-  assert a['feature']==b['feature'] and abs(a['shap_value']-b['shap_value'])<1e-5
+ expected=explain_fire_type(f)['all_contributions']
+ assert r.get('explanationComplete') is True
+ assert len(expected)==len(r['factors'])
+ cached={item['feature']:item for item in r['factors']}
+ assert set(cached)=={item['feature'] for item in expected}
+ for a in expected:
+  b=cached[a['feature']]
+  assert abs(a['shap_value']-b['shap_value'])<1e-5
+  assert abs(a['value']-b['value'])<1e-5
  assert r['activeDays30d']==f['active_days_30d']
  seen.add(r['fire_type'])
 print('PASS: complete cache, normalized probabilities, single-observation prediction/SHAP/history parity for',len(seen),'classes')
+

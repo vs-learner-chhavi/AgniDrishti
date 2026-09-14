@@ -1,0 +1,10 @@
+.evidence { font-size: 12px; line-height: 1.6; color: #b9cbd7; }
+.evidence .opening { color: #e1ecf3; margin: 10px 0; }
+.evidence section { padding: 9px 0; border-bottom: 1px solid #29404f; }
+.evidence h5 { margin: 0 0 4px; font-size: 1em; color: #dfebf2; font-weight: 600; }
+.evidence p { margin: 4px 0; font-size: inherit; line-height: inherit; }
+.evidence ul { margin: 4px 0; padding-left: 17px; }
+.evidence li { margin: 4px 0; }
+.evidence .note { color: #99afbf; font-size: .95em; }
+.compact { font-size: 10px; line-height: 1.5; }
+.compact section { padding: 6px 0; }
