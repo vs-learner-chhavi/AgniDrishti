@@ -8,3 +8,14 @@
 .evidence .note { color: #99afbf; font-size: .95em; }
 .compact { font-size: 10px; line-height: 1.5; }
 .compact section { padding: 6px 0; }
+
+.technical { font-size: 10px; line-height: 1.5; color: #b9cbd7; }
+.technical p { margin: 8px 0 10px; font-size: inherit; color: #99afbf; }
+.technical table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.technical th { font-size: 9px; font-weight: 600; color: #99afbf; text-align: left; padding: 6px 0; }
+.technical th:last-child { width: 70px; text-align: right; }
+.technical td { padding: 9px 0; border-top: 1px solid #29404f; vertical-align: top; overflow-wrap: anywhere; }
+.technical td:first-child { padding-right: 12px; }
+.technical .score { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; font-weight: 600; color: #b9cbd7; }
+.technical .positive { color: #73d9be; }
+.technical .negative { color: #efb19d; }
